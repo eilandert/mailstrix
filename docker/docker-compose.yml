@@ -1,0 +1,66 @@
+# Reference compose for yarad. In the mailscreen stack this service is added to
+# /opt/docker/mailscreen/docker-compose.yml with a static IPv4 on the shared
+# internal network (rspamd's RBL-only resolver can't resolve docker names, so
+# the yara.lua plugin targets the IPv4 directly).
+services:
+  yarad:
+    image: eilandert/yarad:latest
+    container_name: yarad
+    restart: unless-stopped
+    mem_limit: 256m
+
+    # No `ports:` — not published to the host. Reachable only on the internal
+    # docker network, by the static IPv4 the rspamd plugin uses.
+    networks:
+      internal_net:
+        ipv4_address: 172.30.0.43
+
+    environment:
+      TZ: Europe/Amsterdam
+      YARAD_VERBOSE: "0"               # 1 for per-request access lines
+
+      # --- Cache (built for high volume; mail is heavily duplicated) --------
+      YARAD_CACHE_TTL: "600"           # seconds; 0 disables
+      # YARAD_CACHE_SIZE: "65536"      # in-memory LRU entries
+      # Shared cache across replicas (else in-process LRU only):
+      # YARAD_REDIS_URL: "redis://valkey:6379/6"
+      # YARAD_REDIS_PREFIX: "yara:scan:"
+
+      # --- Limits -----------------------------------------------------------
+      # YARAD_MAX_CONCURRENT: "8"      # in-flight scan cap (size to cores)
+      # YARAD_SCAN_TIMEOUT: "10"       # per-scan libyara budget (s)
+
+      # --- Auth (required) --------------------------------------------------
+      # yarad refuses every /scan (503) until a token is set. The rspamd plugin
+      # must present the same value. Prefer the _FILE form (Docker secret).
+      YARAD_TOKEN_FILE: /run/secrets/yarad_token
+
+    secrets:
+      - yarad_token
+
+    # Rules are baked into the image (YARA-Forge + signature-base); no volume.
+
+    # --- Hardening ---------------------------------------------------------
+    read_only: true                    # immutable rootfs (distroless, nonroot)
+    tmpfs:
+      - /tmp:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/yarad", "health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+networks:
+  internal_net:
+    external: true
+    name: mailscreen_internal_net
+
+secrets:
+  yarad_token:
+    file: ./secrets/yarad_token.txt    # one line: the shared secret

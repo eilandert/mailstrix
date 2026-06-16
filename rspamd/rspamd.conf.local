@@ -1,0 +1,29 @@
+# Append to /etc/rspamd/rspamd.conf.local on the host.
+#
+# Two things rspamd needs for a CUSTOM lua module like yarad's yara.lua:
+#   1. an explicit `lua = "..."` include to load the plugin file. rspamd only
+#      auto-loads plugins.d/*.lua for module names it already knows; "yara" is
+#      not one, so it must be included by hand (same as kam.lua).
+#   2. the module's config as an INLINE `yara { }` block HERE, not in
+#      local.d/yara.conf. local.d/<name>.conf is only auto-merged for known
+#      modules; for a custom module rspamd never reads it, logs "module yara is
+#      enabled but has not been configured", and DISABLES the module. (This is
+#      exactly how the DRP backend's config lives inline here too.)
+#
+# Scoring stays in local.d/groups.conf (groups.conf IS a known core file and is
+# auto-included from local.d).
+
+lua = "/etc/rspamd/plugins.d/yara.lua";
+
+yara {
+  # yarad endpoint — IPv4, not a docker name (rspamd's RBL-only resolver can't
+  # resolve container names). Match the address yarad binds on the shared net.
+  url = "http://172.30.0.43:8079/scan";
+  token = "change-me";          # must equal yarad's YARAD_TOKEN (set on host)
+  timeout = 5.0;
+  max_size = 8388608;
+  symbol = "YARA_MATCH";
+  scan_message = true;
+  scan_parts = true;
+  min_part_size = 64;
+}

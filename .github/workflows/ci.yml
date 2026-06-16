@@ -1,0 +1,115 @@
+# yarad CI. The `docker` job is the authoritative gate (self-contained libyara);
+# lint/fuzz/codeql use apt libyara-dev on the runner. Build with go 1.25 — the
+# 1.24 branch no longer gets stdlib security fixes that govulncheck enforces.
+name: ci
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Authoritative gate: build + test exactly as the production image does (CGO
+  # against the statically-built libyara). The Dockerfile `test` target runs
+  # `go vet` + `go test -race -tags yara_static`; then we build the final image,
+  # run it against a local EICAR rule, and smoke the HTTP contract.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: build test stage (go vet + go test -race in-image)
+        run: docker build --target test -f docker/Dockerfile -t yarad-test .
+
+      - name: build final image
+        run: docker build --target final -f docker/Dockerfile -t yarad:ci --build-arg CACHEBUST=ci-${{ github.sha }} .
+
+      - name: smoke (EICAR rule, scan/clean/auth/health/metrics)
+        run: |
+          set -euo pipefail
+          mkdir -p rules
+          cat > rules/eicar.yar <<'YAR'
+          rule EICAR_Test_File : test {
+            strings: $e = "$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!"
+            condition: $e
+          }
+          YAR
+          docker run -d --name yc -e YARAD_TOKEN=ci -e YARAD_RULES= -e YARAD_RULES_DIR=/r \
+            -v "$PWD/rules:/r:ro" -p 18079:8079 yarad:ci
+          for i in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' yc)" = healthy ] && break; sleep 1
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' yc)" = healthy ] || { docker logs yc; exit 1; }
+
+          # build the EICAR body at runtime (don't ship the literal signature)
+          EICAR='X5O!P%@AP[4\PZX54(P^)7CC)7}'"\$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!"'$H+H*'
+
+          match=$(printf '%s' "$EICAR" | curl -s -H "X-YARAD-Token: ci" --data-binary @- http://127.0.0.1:18079/scan)
+          echo "match: $match"; echo "$match" | grep -q EICAR_Test_File
+
+          clean=$(printf 'plain body' | curl -s -H "X-YARAD-Token: ci" --data-binary @- http://127.0.0.1:18079/scan)
+          echo "clean: $clean"; [ "$clean" = '{"matches":[]}' ]
+
+          code=$(printf x | curl -s -o /dev/null -w '%{http_code}' -H "X-YARAD-Token: wrong" --data-binary @- http://127.0.0.1:18079/scan)
+          [ "$code" = 401 ]
+
+          curl -s http://127.0.0.1:18079/metrics | grep -q 'yarad_rules 1'
+          docker rm -f yc
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: go.sum
+      - name: install libyara (CGO dep for build-based linters)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libyara-dev
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then echo "gofmt needed on:"; echo "$unformatted"; exit 1; fi
+      - name: vet
+        run: go vet ./...
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: go.sum
+      - name: install libyara
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libyara-dev
+      - name: fuzz smoke (untrusted /scan body)
+        run: go test -run=x -fuzz='^FuzzScanBody$' -fuzztime=30s ./internal/yarad/
+
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: go
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: go.sum
+      - name: install libyara
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libyara-dev
+      - run: go build ./...
+      - uses: github/codeql-action/analyze@v3

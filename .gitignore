@@ -1,0 +1,8 @@
+/yarad
+/dist/
+*.test
+*.out
+coverage.txt
+# deploy-time secrets (token file referenced by docker-compose) — never commit
+secrets/
+*.token

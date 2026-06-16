@@ -1,0 +1,47 @@
+# Release. On a v* tag, build the yarad binary for amd64 + arm64 (CGO against the
+# statically-linked libyara, exactly as the production image does) and attach
+# both to a GitHub release. Binaries are dynamically linked against glibc/libssl/
+# libz/libzstd; the static bit is libyara itself.
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v3   # arm64 emulation
+      - uses: docker/setup-buildx-action@v3
+
+      - name: build binaries (amd64 + arm64)
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          for arch in amd64 arm64; do
+            docker buildx build \
+              --target bin \
+              --platform "linux/${arch}" \
+              --build-arg "VERSION=${VERSION}" \
+              --output "type=local,dest=dist/${arch}" \
+              -f docker/Dockerfile .
+            install -D "dist/${arch}/yarad" "out/yarad-linux-${arch}"
+          done
+          ( cd out && sha256sum yarad-linux-* > SHA256SUMS )
+          ls -l out
+
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            out/yarad-linux-amd64 \
+            out/yarad-linux-arm64 \
+            out/SHA256SUMS
