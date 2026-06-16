@@ -39,9 +39,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
-            out/yarad-linux-amd64 \
-            out/yarad-linux-arm64 \
-            out/SHA256SUMS
+          set -euo pipefail
+          # Idempotent: if a release for this tag already exists (e.g. created
+          # manually before the tag push), upload/overwrite assets onto it
+          # instead of failing the whole run on a duplicate.
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" --clobber \
+              out/yarad-linux-amd64 \
+              out/yarad-linux-arm64 \
+              out/SHA256SUMS
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              out/yarad-linux-amd64 \
+              out/yarad-linux-arm64 \
+              out/SHA256SUMS
+          fi
