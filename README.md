@@ -45,8 +45,10 @@ file before you match against it:
   import layout.
 * **`math`** — `math.entropy(...)` to flag a packed/encrypted section, mean-byte
   and chi-square tests to spot compression or XOR.
-* **`time`, `console`, external variables** — runtime context (`filename`,
-  `filesize`, and yarad's own `VBA` flag, below) folded into the condition.
+* **`time`, `console`, external variables** — runtime context folded into the
+  condition. yarad sets `filename`/`extension` from the attachment name (passed
+  by the plugin) and its own `VBA` flag (below), so name-keyed and macro rules
+  fire instead of always seeing an empty default.
 
 That's the difference that matters for mail: a literal-string signature dies the
 moment the author edits one byte; a rule that asserts "PE file, entropy of the
@@ -66,6 +68,11 @@ yesterday's exact file — rules catch tomorrow's. yarad compiles all of this
   **source ruleset file** the rule was compiled from (yarad namespaces each rule
   file by its name), so a generic rule like `http` is traceable to the set that
   shipped it — the rspamd plugin shows it as `http (anyrun-phishing.yar)`.
+  Send the attachment name in an optional **`X-YARAD-Filename`** header (base64
+  — the name is attacker-controlled, so encoding it stops header injection) and
+  yarad sets the YARA `filename`/`extension` external variables for the scan, so
+  THOR/Loki-style name-keyed rules (`filename matches /\.exe$/`, `extension ==
+  ".scr"`) fire. The filename is part of the verdict cache key.
 * **`GET /health`** — liveness: `200` while a rule set is loaded. Wired to the
   container `HEALTHCHECK`; stays `200` during a graceful drain so the container
   isn't killed mid-shutdown.
@@ -126,6 +133,11 @@ docker run -d --name yarad \
 printf 'hello' | curl -s -H 'X-YARAD-Token: changeme' \
     --data-binary @- http://127.0.0.1:8079/scan
 # -> {"matches":[]}
+
+# with an attachment name (base64 — sets the filename/extension YARA vars):
+printf 'MZ...' | curl -s -H 'X-YARAD-Token: changeme' \
+    -H "X-YARAD-Filename: $(printf 'invoice.exe' | base64)" \
+    --data-binary @- http://127.0.0.1:8079/scan
 ```
 
 Out of the box the image already has ~10k public rules baked in (see
@@ -218,6 +230,19 @@ and merges + de-duplicates the matches. While scanning the cleartext, the
 external YARA variable `VBA` is set to `1`, so Didier's `vba.yara` rules (`VBA
 and any of (...)` — `AutoOpen`, `Shell`, `CallByName`, …) fire exactly where they
 should and stay inert on raw bytes.
+
+**Filename / extension externals — name-keyed rules.** A large slice of the
+public rulesets (THOR/Loki signature-base) keys on the file *name*, not just its
+bytes: `filename matches /\.(exe|scr|js)$/`, `extension == ".lnk"`. The rspamd
+plugin sends each MIME part's filename to yarad (base64, in `X-YARAD-Filename`),
+which sets the YARA `filename` and `extension` external variables for that scan —
+on both the raw bytes and any decompressed macro stream. With no name (the
+whole-message scan, or an unnamed part) the variables keep their empty default
+and those conditions stay inert, exactly as before. Because the verdict now
+depends on the name, the filename is folded into the verdict cache key: the same
+bytes carried as `invoice.pdf` and `invoice.exe` are scanned and cached
+separately. `filepath`/`filetype`/`owner` stay empty — yarad has no real path,
+magic-type, or owner for a mail attachment.
 
 **RTF exploits — matched on raw bytes (no extraction needed).** RTF maldocs (the
 classic CVE-2017-11882 Equation-Editor drop, embedded-OLE `objdata` hex) carry
@@ -352,7 +377,7 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
 ### Planned (sorted low-investment → high-return)
 
 **Quick wins (low effort, high value):**
-- [ ] Pass filename/extension to yarad → set YARA `filename`/`extension` external vars (activates many existing rules)
+- [x] Pass filename/extension to yarad → set YARA `filename`/`extension` external vars (activates many existing rules) — `X-YARAD-Filename` (base64) header, plugin sends the MIME part name
 - [ ] MalwareBazaar attachment-hash lookup (SHA256 → known malware; reuse URLhaus feed-cache infra)
 - [ ] Use `meta.score` in classification (finer tiering, no new parsers)
 - [ ] Rule-staleness healthcheck/metric (catch a silently-broken daily rebuild)

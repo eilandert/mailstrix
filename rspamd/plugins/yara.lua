@@ -25,6 +25,7 @@ each attachment part, or both.
 
 local rspamd_logger = require "rspamd_logger"
 local rspamd_http = require "rspamd_http"
+local rspamd_util = require "rspamd_util"
 local lua_util = require "lua_util"
 local N = "yara"
 
@@ -67,8 +68,10 @@ local settings = {
 
 -- post sends buf to yarad and invokes cb(matches) with the decoded rule list
 -- (possibly empty). Errors are logged and treated as "no match" (fail-open):
--- a scanner problem must never block mail.
-local function post(task, buf, what, cb)
+-- a scanner problem must never block mail. fname (optional) is the attachment
+-- filename; it is passed to yarad so the YARA filename/extension external vars
+-- get set and name-keyed rules (THOR/Loki) fire.
+local function post(task, buf, what, fname, cb)
   local function http_cb(err, code, body)
     if err then
       rspamd_logger.errx(task, "yarad request failed (%s): %s", what, err)
@@ -95,6 +98,12 @@ local function post(task, buf, what, cb)
   local headers = { ["Content-Type"] = "application/octet-stream" }
   if settings.token and settings.token ~= "" then
     headers["X-YARAD-Token"] = settings.token
+  end
+  -- The attachment filename comes from the (attacker-controlled) email, so it is
+  -- base64-encoded: that keeps an embedded newline / control byte from injecting
+  -- an HTTP header. yarad decodes it and sets the YARA filename/extension vars.
+  if fname and fname ~= "" then
+    headers["X-YARAD-Filename"] = rspamd_util.encode_base64(fname)
   end
 
   -- rspamd_http.request returns false when it could not even schedule the
@@ -182,7 +191,9 @@ local function check_cb(task)
         local dg = part:get_digest()
         if not (dg and seen_parts[dg]) then
           if dg then seen_parts[dg] = true end
-          jobs[#jobs + 1] = { buf = content, what = "part" }
+          -- Pass the attachment filename so yarad sets the YARA filename/extension
+          -- external vars (nil for an unnamed part — yarad then leaves them empty).
+          jobs[#jobs + 1] = { buf = content, what = "part", fname = part:get_filename() }
         end
       end
     end
@@ -220,7 +231,7 @@ local function check_cb(task)
   end
 
   for _, job in ipairs(jobs) do
-    post(task, job.buf, job.what, function(matches)
+    post(task, job.buf, job.what, job.fname, function(matches)
       for _, m in ipairs(matches) do
         if m.rule then
           if m.rule:sub(1, 8) == "URLHAUS_" then

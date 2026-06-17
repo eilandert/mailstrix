@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ import (
 // production implementation; tests inject a fake to exercise the HTTP layer
 // without libyara.
 type ScanEngine interface {
-	Scan(buf []byte) ([]Match, error)
+	Scan(buf []byte, meta ScanMeta) ([]Match, error)
 	RuleCount() int64
 	// Fingerprint identifies the active rule set; it is mixed into the cache key
 	// so a reload that changes the rules invalidates old verdicts (L1 and Redis).
@@ -318,11 +319,19 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	t0 := time.Now()
 	s.metrics.scans.Add(1)
 
-	// Mix the active ruleset fingerprint into the cache key so a SIGHUP reload
-	// that changes the rules invalidates old verdicts in both L1 and Redis L2
-	// (old keys orphan and TTL-expire; no stale "clean" after a rule update).
-	key := s.engine.Fingerprint() + ":" + sha256key(buf)
-	matches, cacheStatus := s.lookupOrScan(ctx, key, buf)
+	// Attachment metadata (filename/extension) the plugin attached to this scan;
+	// fed to the YARA `filename`/`extension` external variables so name-keyed
+	// rules fire (see ScanMeta).
+	meta := scanMetaFromRequest(r)
+
+	// Mix the active ruleset fingerprint AND the metadata into the cache key. The
+	// fingerprint invalidates old verdicts on a SIGHUP reload (old keys orphan and
+	// TTL-expire; no stale "clean" after a rule update). The metadata is in the key
+	// because the verdict now DEPENDS on it: the same bytes with filename
+	// "invoice.exe" vs "invoice.pdf" can match different rules, so they must not
+	// share a cached verdict.
+	key := s.engine.Fingerprint() + ":" + meta.cacheKey() + ":" + sha256key(buf)
+	matches, cacheStatus := s.lookupOrScan(ctx, key, buf, meta)
 
 	if len(matches) > 0 {
 		s.metrics.matches.Add(1)
@@ -352,7 +361,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 // in-flight identical scan, or a fresh scan whose result is cached. At high
 // volume the cache + coalescing collapse a bulk campaign's N identical messages
 // into a single scan. Returns the matches and a cache-status label for logs.
-func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte) ([]Match, string) {
+func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte, meta ScanMeta) ([]Match, string) {
 	// Cache lookup (L1 + Redis L2) runs OUTSIDE the scan-CPU gate, so a slow Redis
 	// can't hold a scan slot; the L2 circuit breaker bounds it further.
 	if m, found := s.cache.Get(key); found {
@@ -376,7 +385,7 @@ func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte) ([]Ma
 		}
 		m, scanErr := func() ([]Match, error) {
 			defer func() { <-s.sem }()
-			return s.dispatch(buf)
+			return s.dispatch(buf, meta)
 		}()
 		if scanErr != nil {
 			// Fail open: a scan error is "no match" to the plugin so a scanner
@@ -404,14 +413,14 @@ func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte) ([]Ma
 // deliberate — the caller treats errors as fail-open "no match" but does NOT
 // cache them, so a panicking input is rescanned next time instead of being
 // pinned as a clean verdict for the whole cache TTL.
-func (s *Server) dispatch(buf []byte) (matches []Match, err error) {
+func (s *Server) dispatch(buf []byte, meta ScanMeta) (matches []Match, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			s.errf("scan panic: %v", rec)
 			matches, err = nil, fmt.Errorf("scan panic: %v", rec)
 		}
 	}()
-	return s.engine.Scan(buf)
+	return s.engine.Scan(buf, meta)
 }
 
 // acquireOn takes a slot from sem within BackendTimeout, returning early (false)
@@ -543,6 +552,46 @@ func writeRaw(w http.ResponseWriter, code int, ctype string, body []byte) {
 func sha256key(b []byte) string {
 	sum := sha256.Sum256(b)
 	return string(sum[:])
+}
+
+// filenameHeader carries the attachment filename from the rspamd plugin. The
+// value is base64 (std, padding optional, whitespace tolerated): the name comes
+// from the email and is attacker-controlled, so encoding it stops an embedded
+// CR/LF or control byte from injecting an HTTP header or log line. Absent or
+// undecodable ⇒ no metadata, never an error (the scan still runs).
+const filenameHeader = "X-YARAD-Filename"
+
+// scanMetaFromRequest extracts and normalizes the attachment metadata the plugin
+// attached to the scan. See filenameHeader for the wire format / why base64.
+func scanMetaFromRequest(r *http.Request) ScanMeta {
+	raw := r.Header.Get(filenameHeader)
+	if raw == "" {
+		return ScanMeta{}
+	}
+	dec, ok := decodeFilenameB64(raw)
+	if !ok {
+		return ScanMeta{}
+	}
+	return NewScanMeta(string(dec))
+}
+
+// decodeFilenameB64 decodes the (possibly whitespace-folded, possibly unpadded)
+// base64 filename header. It tolerates both padded and raw std base64 so a small
+// difference in how the plugin encodes can't silently drop the filename.
+func decodeFilenameB64(s string) ([]byte, bool) {
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == ' ' || r == '\t' {
+			return -1
+		}
+		return r
+	}, s)
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return b, true
+	}
+	if b, err := base64.RawStdEncoding.DecodeString(s); err == nil {
+		return b, true
+	}
+	return nil, false
 }
 
 // ruleNames renders the matched rule identifiers as "[a, b, c]" for the access

@@ -3,6 +3,7 @@ package yarad
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -190,16 +191,19 @@ func TestShutdownSetsDraining(t *testing.T) {
 // fakeEngine exercises the HTTP layer without libyara: it returns canned
 // matches (or an error) for any input, and a fixed rule count.
 type fakeEngine struct {
-	matches []Match
-	err     error
-	count   int64
-	panic   bool
-	fp      string
-	scans   atomic.Int64 // how many times Scan actually ran
+	matches  []Match
+	err      error
+	count    int64
+	panic    bool
+	fp       string
+	scans    atomic.Int64 // how many times Scan actually ran
+	lastMeta atomic.Pointer[ScanMeta]
 }
 
-func (f *fakeEngine) Scan(buf []byte) ([]Match, error) {
+func (f *fakeEngine) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 	f.scans.Add(1)
+	m := meta
+	f.lastMeta.Store(&m)
 	if f.panic {
 		panic("boom")
 	}
@@ -346,6 +350,62 @@ func TestFingerprintChangeInvalidatesCache(t *testing.T) {
 	post(s, "samebody", map[string]string{"X-YARAD-Token": "tok"})
 	if got := eng.scans.Load(); got != 2 {
 		t.Errorf("fingerprint change did not invalidate cache: Scan ran %d times, want 2", got)
+	}
+}
+
+// The X-YARAD-Filename header (base64) must be decoded, normalized, and handed to
+// the engine as ScanMeta so name-keyed YARA rules can fire.
+func TestScanFilenameHeaderPlumbing(t *testing.T) {
+	eng := &fakeEngine{count: 1}
+	s := newTestServer(eng, "tok")
+	hdr := map[string]string{
+		"X-YARAD-Token":    "tok",
+		"X-YARAD-Filename": base64.StdEncoding.EncodeToString([]byte(`C:\Users\bob\Invoice.EXE`)),
+	}
+	if w := post(s, "body", hdr); w.Code != 200 {
+		t.Fatalf("code = %d", w.Code)
+	}
+	got := eng.lastMeta.Load()
+	if got == nil {
+		t.Fatal("engine never received metadata")
+	}
+	if got.Filename != "Invoice.EXE" { // basename, case preserved
+		t.Errorf("filename = %q want %q", got.Filename, "Invoice.EXE")
+	}
+	if got.Extension != ".exe" { // lowercased, dot included
+		t.Errorf("extension = %q want %q", got.Extension, ".exe")
+	}
+}
+
+// A garbage / absent filename header must not error the scan; the engine just
+// gets empty metadata (externals stay at their empty defaults).
+func TestScanFilenameHeaderBadIsIgnored(t *testing.T) {
+	eng := &fakeEngine{count: 1}
+	s := newTestServer(eng, "tok")
+	if w := post(s, "body", map[string]string{"X-YARAD-Token": "tok", "X-YARAD-Filename": "!!!not base64!!!"}); w.Code != 200 {
+		t.Fatalf("bad filename header should not break scan: %d", w.Code)
+	}
+	if got := eng.lastMeta.Load(); got == nil || got.Filename != "" {
+		t.Errorf("undecodable header should yield empty filename, got %+v", got)
+	}
+}
+
+// Same bytes, different filename ⇒ different cache key ⇒ rescan. A name-keyed
+// verdict must not be served from a sibling message that shared the bytes but
+// had another name.
+func TestFilenameIsPartOfCacheKey(t *testing.T) {
+	eng := &fakeEngine{matches: []Match{{Rule: "R"}}, count: 1, fp: "A"}
+	s := newCachingServer(eng, "tok")
+	enc := func(n string) string { return base64.StdEncoding.EncodeToString([]byte(n)) }
+	post(s, "samebody", map[string]string{"X-YARAD-Token": "tok", "X-YARAD-Filename": enc("a.exe")})
+	post(s, "samebody", map[string]string{"X-YARAD-Token": "tok", "X-YARAD-Filename": enc("a.pdf")})
+	if got := eng.scans.Load(); got != 2 {
+		t.Errorf("different filename did not bypass cache: Scan ran %d times, want 2", got)
+	}
+	// Identical filename + bytes DOES hit the cache (no third scan).
+	post(s, "samebody", map[string]string{"X-YARAD-Token": "tok", "X-YARAD-Filename": enc("a.pdf")})
+	if got := eng.scans.Load(); got != 2 {
+		t.Errorf("identical filename+bytes rescanned: Scan ran %d times, want 2", got)
 	}
 }
 

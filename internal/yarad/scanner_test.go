@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,7 +58,7 @@ func TestScannerCompileAndCount(t *testing.T) {
 
 func TestScannerMatch(t *testing.T) {
 	s := newScanner(t, writeRules(t, eicarRule))
-	m, err := s.Scan(eicar())
+	m, err := s.Scan(eicar(), ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestScannerRuleDenylist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScanner: %v", err)
 	}
-	m, err := s.Scan(eicar())
+	m, err := s.Scan(eicar(), ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func TestScannerRuleDenylist(t *testing.T) {
 
 func TestScannerNoMatch(t *testing.T) {
 	s := newScanner(t, writeRules(t, eicarRule))
-	m, err := s.Scan([]byte("a perfectly innocent email body"))
+	m, err := s.Scan([]byte("a perfectly innocent email body"), ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +132,7 @@ func TestScannerSkipsBadFileKeepsGood(t *testing.T) {
 	if s.RuleCount() != 1 {
 		t.Fatalf("rule count = %d, want 1 (good kept, bad skipped)", s.RuleCount())
 	}
-	m, err := s.Scan(eicar())
+	m, err := s.Scan(eicar(), ScanMeta{})
 	if err != nil || len(m) != 1 {
 		t.Errorf("good rule should still match: %+v err=%v", m, err)
 	}
@@ -148,7 +149,7 @@ func TestScannerBrokenRuleKeepsOld(t *testing.T) {
 	if err := s.Reload(); err == nil {
 		t.Error("broken reload should error")
 	}
-	m, err := s.Scan(eicar())
+	m, err := s.Scan(eicar(), ScanMeta{})
 	if err != nil || len(m) != 1 {
 		t.Errorf("old ruleset should still match after failed reload: %+v err=%v", m, err)
 	}
@@ -187,7 +188,7 @@ func TestScanMatchesMacroViaDecompressedStream(t *testing.T) {
 		t.Fatal("fixture changed: marker present in raw bytes, test no longer proves the extract path")
 	}
 	s := newScanner(t, writeRules(t, vbaRule))
-	m, err := s.Scan(doc)
+	m, err := s.Scan(doc, ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +200,7 @@ func TestScanMatchesMacroViaDecompressedStream(t *testing.T) {
 // The extract counters must move for a macro doc and stay put for a non-doc.
 func TestScanExtractMetrics(t *testing.T) {
 	s := newScanner(t, writeRules(t, vbaRule))
-	if _, err := s.Scan(macroDoc(t)); err != nil {
+	if _, err := s.Scan(macroDoc(t), ScanMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	em := s.ExtractMetrics()
@@ -209,7 +210,7 @@ func TestScanExtractMetrics(t *testing.T) {
 	if em.Failed != 0 || em.Panicked != 0 || em.Encrypted != 0 {
 		t.Errorf("macro doc set fail/panic/enc: %+v", em)
 	}
-	if _, err := s.Scan([]byte("a plain non-document body")); err != nil {
+	if _, err := s.Scan([]byte("a plain non-document body"), ScanMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.ExtractMetrics().Docs; got != 1 {
@@ -223,7 +224,7 @@ func TestScanMalformedOLECountedButFailsOpen(t *testing.T) {
 	s := newScanner(t, writeRules(t, eicarRule))
 	poison := append(append([]byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}, eicar()...),
 		bytes.Repeat([]byte{0x7F}, 2048)...)
-	m, err := s.Scan(poison)
+	m, err := s.Scan(poison, ScanMeta{})
 	if err != nil {
 		t.Fatalf("malformed OLE must not error the scan: %v", err)
 	}
@@ -243,11 +244,73 @@ func TestScanMalformedOLECountedButFailsOpen(t *testing.T) {
 func TestScanOneVBAExternalVariable(t *testing.T) {
 	s := newScanner(t, writeRules(t, "rule Needs_VBA { condition: VBA }"))
 	rules := s.rules.Load()
-	if m, err := s.scanOne(rules, []byte("x"), false, 0); err != nil || len(m) != 0 {
+	if m, err := s.scanOne(rules, []byte("x"), scanVars{}, 0); err != nil || len(m) != 0 {
 		t.Fatalf("VBA=false (raw) must not match: %+v err=%v", m, err)
 	}
-	if m, err := s.scanOne(rules, []byte("x"), true, 0); err != nil || len(m) != 1 {
+	if m, err := s.scanOne(rules, []byte("x"), scanVars{vba: true}, 0); err != nil || len(m) != 1 {
 		t.Fatalf("VBA=true (macro stream) must match: %+v err=%v", m, err)
+	}
+}
+
+// A rule whose ONLY condition is the filename external variable must be inert
+// with no filename and fire when ScanMeta carries a matching name — the whole
+// point of the feature (THOR/Loki name-keyed rules). The body bytes are clean,
+// so a match can only come from the external variable.
+func TestScanFilenameExternalVariable(t *testing.T) {
+	s := newScanner(t, writeRules(t, `rule Bad_Ext { condition: filename matches /\.exe$/ }`))
+	clean := []byte("a perfectly innocent email body")
+	if m, err := s.Scan(clean, ScanMeta{}); err != nil || len(m) != 0 {
+		t.Fatalf("no filename must not match: %+v err=%v", m, err)
+	}
+	if m, err := s.Scan(clean, NewScanMeta("invoice.txt")); err != nil || len(m) != 0 {
+		t.Fatalf("non-.exe filename must not match: %+v err=%v", m, err)
+	}
+	if m, err := s.Scan(clean, NewScanMeta("invoice.exe")); err != nil || len(m) != 1 || m[0].Rule != "Bad_Ext" {
+		t.Fatalf(".exe filename must match: %+v err=%v", m, err)
+	}
+}
+
+// The extension external variable (lowercased, dot included) must drive a rule
+// independently of filename, including on a mixed-case name.
+func TestScanExtensionExternalVariable(t *testing.T) {
+	s := newScanner(t, writeRules(t, `rule Bad_Scr { condition: extension == ".scr" }`))
+	clean := []byte("a perfectly innocent email body")
+	if m, err := s.Scan(clean, NewScanMeta("greeting.GIF")); err != nil || len(m) != 0 {
+		t.Fatalf(".gif must not match .scr rule: %+v err=%v", m, err)
+	}
+	if m, err := s.Scan(clean, NewScanMeta("greeting.SCR")); err != nil || len(m) != 1 {
+		t.Fatalf("uppercase .SCR must normalize to .scr and match: %+v err=%v", m, err)
+	}
+}
+
+func TestNewScanMeta(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantName string
+		wantExt  string
+	}{
+		{"", "", ""},
+		{"invoice.exe", "invoice.exe", ".exe"},
+		{"Invoice.EXE", "Invoice.EXE", ".exe"},              // name case kept, ext lowered
+		{`C:\Users\bob\payload.scr`, "payload.scr", ".scr"}, // windows path stripped
+		{"/var/mail/report.PDF", "report.PDF", ".pdf"},      // unix path stripped
+		{"archive.tar.gz", "archive.tar.gz", ".gz"},         // last extension only
+		{".bashrc", ".bashrc", ""},                          // leading-dot = no extension
+		{"trailingdot.", "trailingdot.", ""},                // trailing dot = no extension
+		{"noext", "noext", ""},                              // no dot
+		{"bad\r\nname.exe", "badname.exe", ".exe"},          // control chars stripped
+		{"  spaced.doc  ", "spaced.doc", ".doc"},            // trimmed
+	}
+	for _, c := range cases {
+		got := NewScanMeta(c.in)
+		if got.Filename != c.wantName || got.Extension != c.wantExt {
+			t.Errorf("NewScanMeta(%q) = {%q,%q}, want {%q,%q}", c.in, got.Filename, got.Extension, c.wantName, c.wantExt)
+		}
+	}
+	// Over-length name is capped to maxFilenameLen.
+	long := strings.Repeat("a", maxFilenameLen+50) + ".exe"
+	if got := NewScanMeta(long); len(got.Filename) != maxFilenameLen {
+		t.Errorf("over-length name not capped: len=%d want %d", len(got.Filename), maxFilenameLen)
 	}
 }
 
