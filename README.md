@@ -314,7 +314,7 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
   | `YARA_MALWARE` | malware family / webshell / RAT / APT / ransomware | `8.0` |
   | `YARA_EXPLOIT` | exploit / CVE / maldoc exploit | `7.0` |
   | `YARA_PHISHING` | phishing kit / document | `5.0` |
-  | `YARA_MATCH` | uncategorized rule match (default bucket) | `4.0` |
+  | `YARA` | uncategorized rule match (default bucket) | `4.0` |
   | `YARA_SUSPICIOUS` | heuristic / suspicious / anomaly (FP-prone) | `2.0` |
   | `URLHAUS_MALWARE_URL` | known malware URL — options are the **URLs** (`(host)`/`(deobf)` tagged) | `8.0` |
 

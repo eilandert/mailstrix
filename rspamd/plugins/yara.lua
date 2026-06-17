@@ -10,13 +10,14 @@ Why a backend instead of a native module:
     async (rspamd_http) and libyara never enters the rspamd image.
 
 yarad returns JSON:
-  { "matches": [ { "rule": "<name>", "tags": [..], "meta": {..} }, ... ] }
+  { "matches": [ { "rule": "<name>", "namespace": "<file>", "tags": [..], "meta": {..} }, ... ] }
 
-Each matched rule becomes a result on the single symbol YARA_MATCH, with the
-matched rule names as the option list (so they show in the history / can be
-acted on by force_actions/multimap without a symbol per rule). Scoring is done
-in groups.conf — shipped at weight 0 (log-only) until false positives are
-cleared, then raised.
+Each matched rule is classified (see classify()) into one scoring-tier symbol —
+YARA_MALWARE / YARA_EXPLOIT / YARA_PHISHING / YARA_SUSPICIOUS, or YARA for an
+uncategorized hit — with the matched rules as that symbol's options, shown as
+"rule (source-file.yar)" (traceable, and actionable by force_actions/multimap).
+URLhaus malware-URL hits go to URLHAUS_MALWARE_URL. Per-tier weights live in
+groups.conf (group "YARA").
 
 Scope is configurable (scan_message / scan_parts): the full rfc822 message,
 each attachment part, or both.
@@ -44,7 +45,7 @@ local settings = {
   -- these symbols by its name/source-file/tags/meta.score, so different kinds of
   -- hit score differently in groups.conf instead of one flat weight for every
   -- rule. `symbol` is the default/uncategorized bucket (and the callback symbol).
-  symbol            = "YARA_MATCH",       -- uncategorized rule match (default)
+  symbol            = "YARA",             -- uncategorized rule match (default)
   symbol_malware    = "YARA_MALWARE",     -- malware family / webshell / RAT / APT
   symbol_exploit    = "YARA_EXPLOIT",     -- exploit / CVE / maldoc exploit
   symbol_phishing   = "YARA_PHISHING",    -- phishing kit / phishing document
