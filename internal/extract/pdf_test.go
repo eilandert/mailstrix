@@ -111,22 +111,20 @@ func TestExtractPDFStrayStreamKeyword(t *testing.T) {
 }
 
 // Regression (Codex #1): a PDF stuffed with many non-deflate stream bodies must
-// be bounded by the attempt cap (no unbounded inflate attempts) and terminate.
+// be bounded by the attempt cap — the carve loop must stop after maxPDFStreams
+// inflate attempts even though none emit a stream, so it cannot scan all
+// (maxPDFStreams*4) objects. We assert termination implicitly (no hang, caught
+// by `go test`'s timeout) and that no streams were emitted from non-deflate
+// bodies. No goroutine: keep the asan thread count low.
 func TestExtractPDFAttemptCapBounded(t *testing.T) {
 	var b bytes.Buffer
 	b.WriteString("%PDF-1.7\n")
 	for i := 0; i < maxPDFStreams*4; i++ {
 		b.WriteString("obj\nstream\nNOTDEFLATE rawbytes here\nendstream\n")
 	}
-	done := make(chan struct{})
-	go func() {
-		_ = Extract(b.Bytes(), time.Time{})
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("PDF inflate-attempt loop did not terminate (attempt cap missing)")
+	res := Extract(b.Bytes(), time.Time{})
+	if len(res.Streams) != 0 {
+		t.Errorf("non-deflate bodies should emit nothing, got %d streams", len(res.Streams))
 	}
 }
 
