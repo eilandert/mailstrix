@@ -106,20 +106,8 @@ jobs:
       - name: osv-scanner (go.mod/go.sum dependency CVEs)
         run: docker run --rm -v "$PWD:/src" -w /src ghcr.io/google/osv-scanner:latest --lockfile=go.mod
 
-  fuzz:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-          cache-dependency-path: go.sum
-      - name: install libyara
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libyara-dev
-      - name: fuzz smoke (untrusted /scan body)
-        run: go test -run=x -fuzz='^FuzzScanBody$' -fuzztime=30s ./internal/yarad/
-      - name: fuzz smoke (extract — hostile OLE2/OOXML attachment)
-        run: go test -run=x -fuzz='^FuzzExtract$' -fuzztime=60s ./internal/extract/
+  # NOTE: fuzzing moved to its own monthly workflow (.github/workflows/fuzz.yml)
+  # — it found nothing per-PR after the initial pass and just slowed the gate.
 
   # AddressSanitizer over the CGO/libyara surface: catches heap errors in our
   # go-yara usage (Scanner lifecycle, buffer passing) that -race can't. Valgrind

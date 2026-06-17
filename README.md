@@ -1,6 +1,7 @@
 # yarad — YARA scanning for rspamd
 
 [![CI](https://github.com/eilandert/rspamd-yarad/actions/workflows/ci.yml/badge.svg)](https://github.com/eilandert/rspamd-yarad/actions/workflows/ci.yml)
+[![fuzz](https://github.com/eilandert/rspamd-yarad/actions/workflows/fuzz.yml/badge.svg)](https://github.com/eilandert/rspamd-yarad/actions/workflows/fuzz.yml)
 [![Release](https://github.com/eilandert/rspamd-yarad/actions/workflows/release.yml/badge.svg)](https://github.com/eilandert/rspamd-yarad/actions/workflows/release.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/eilandert/rspamd-yarad.svg)](https://pkg.go.dev/github.com/eilandert/rspamd-yarad)
 
