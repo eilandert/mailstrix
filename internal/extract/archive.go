@@ -213,7 +213,7 @@ func unpackZip(buf []byte, res *Result, b *archiveBudget, depth int) {
 			continue
 		}
 		data := readMember(rc)
-		rc.Close()
+		_ = rc.Close()
 		emitMember(data, res, b, depth)
 	}
 }
@@ -293,7 +293,7 @@ func unpack7z(buf []byte, res *Result, b *archiveBudget, depth int) {
 			continue // encrypted/corrupt member: skip, keep the rest
 		}
 		data := readMember(rc)
-		rc.Close()
+		_ = rc.Close()
 		emitMember(data, res, b, depth)
 	}
 }

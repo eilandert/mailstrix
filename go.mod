@@ -1,6 +1,6 @@
 module github.com/eilandert/rspamd-yarad
 
-go 1.25.0
+go 1.25
 
 require (
 	github.com/bodgit/sevenzip v1.6.4
