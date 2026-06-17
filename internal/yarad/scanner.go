@@ -15,6 +15,7 @@ import (
 	yara "github.com/hillu/go-yara/v4"
 
 	"github.com/eilandert/rspamd-yarad/internal/extract"
+	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
 
 // Match is one matched YARA rule, reported back to the rspamd plugin. Tags and
@@ -50,6 +51,10 @@ type Scanner struct {
 	// Rule-reload observability (see ReloadMetrics).
 	reloadAttempts, reloadOK, reloadFail atomic.Uint64
 	reloadLastUnix, reloadLastMillis     atomic.Int64
+
+	// Optional abuse.ch URLhaus malware-URL lookup (nil when no Auth-Key set).
+	urlhaus    *urlhaus.Checker
+	urlhausMax int
 }
 
 // ExtractMetrics is a snapshot of the document pre-extraction counters, surfaced
@@ -87,6 +92,11 @@ func NewScanner(cfg *Config, logf func(string, ...any)) (*Scanner, error) {
 		logf:        logf,
 		srcDir:      cfg.RulesDir,
 		srcFile:     cfg.RulesPath,
+		urlhaus:     urlhaus.New(cfg.URLhausKey, cfg.URLhausRefresh, logf), // nil if no key
+		urlhausMax:  cfg.URLhausMaxURLs,
+	}
+	if s.urlhaus != nil {
+		logf("URLhaus malware-URL lookup enabled (refresh=%s, max_urls/msg=%d)", cfg.URLhausRefresh, cfg.URLhausMaxURLs)
 	}
 	if err := s.Reload(); err != nil {
 		return nil, err
@@ -371,7 +381,36 @@ func (s *Scanner) Scan(buf []byte) ([]Match, error) {
 		}
 		out = mergeMatches(out, m)
 	}
+	// URLhaus: check the raw message and every decompressed macro/RTF stream for
+	// known malware-distribution URLs (incl. defanged ones). Each distinct URL
+	// becomes its own match (deduped across buffers) so the mail history shows
+	// exactly which URLs hit.
+	if s.urlhaus != nil {
+		seenURL := make(map[string]struct{})
+		addHits := func(b []byte) {
+			for _, h := range s.urlhaus.Check(b, s.urlhausMax) {
+				if _, dup := seenURL[h.URL]; dup {
+					continue
+				}
+				seenURL[h.URL] = struct{}{}
+				out = append(out, Match{Rule: h.Rule(), Tags: []string{"urlhaus"}, Meta: map[string]string{"url": h.URL}})
+			}
+		}
+		addHits(buf)
+		for _, stream := range res.Streams {
+			addHits(stream)
+		}
+	}
 	return out, nil
+}
+
+// URLhausMetrics reports the URLhaus checker's state for /metrics, or a disabled
+// snapshot when no Auth-Key is configured.
+func (s *Scanner) URLhausMetrics() urlhaus.Metrics {
+	if s.urlhaus == nil {
+		return urlhaus.Metrics{}
+	}
+	return s.urlhaus.Metrics()
 }
 
 // scanOne runs the rule set over a single buffer and maps libyara's matches to

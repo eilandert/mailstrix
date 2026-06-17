@@ -48,8 +48,14 @@ type Config struct {
 	RedisURL    string        // YARAD_REDIS_URL    (empty -> in-process LRU only)
 	RedisPrefix string        // YARAD_REDIS_PREFIX (default yara:scan:)
 
-	Verbose   bool // YARAD_VERBOSE
-	LogStdout bool // YARAD_LOG_STDOUT — info/access to stdout; errors stay stderr
+	Verbose     bool // YARAD_VERBOSE
+	LogStdout   bool // YARAD_LOG_STDOUT — info/access to stdout; errors stay stderr
+	MetricsAuth bool // YARAD_METRICS_AUTH — require the token for /metrics and /version
+
+	// URLhaus malware-URL lookup. Disabled unless an abuse.ch Auth-Key is set.
+	URLhausKey     string        // YARAD_URLHAUS_KEY[_FILE] — abuse.ch Auth-Key
+	URLhausRefresh time.Duration // YARAD_URLHAUS_REFRESH (default 15m, floor 5m)
+	URLhausMaxURLs int           // YARAD_URLHAUS_MAX_URLS  (per message, default 64)
 
 	Version string // build version string, set by main (not from env); for /version
 }
@@ -74,6 +80,10 @@ func LoadConfig() *Config {
 		RedisPrefix:    envStr("YARAD_REDIS_PREFIX", "yara:scan:"),
 		Verbose:        envBool("YARAD_VERBOSE"),
 		LogStdout:      envBool("YARAD_LOG_STDOUT"),
+		MetricsAuth:    envBool("YARAD_METRICS_AUTH"),
+		URLhausKey:     envOrFile("YARAD_URLHAUS_KEY"),
+		URLhausRefresh: envDur("YARAD_URLHAUS_REFRESH", 900),
+		URLhausMaxURLs: envInt("YARAD_URLHAUS_MAX_URLS", 64),
 	}
 	c.sanitize()
 	return c

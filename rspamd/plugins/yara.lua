@@ -41,6 +41,9 @@ local settings = {
   timeout = 10.0,
   max_size = 8 * 1024 * 1024,  -- don't ship bodies larger than this to yarad
   symbol = "YARA_MATCH",
+  -- Separate symbol for yarad's URLhaus malware-URL hits (rule names start
+  -- "URLHAUS_"), so they score independently of YARA rule matches.
+  urlhaus_symbol = "URLHAUS_MALWARE_URL",
   -- What to scan. At least one must be true or the plugin does nothing.
   scan_message = true,         -- the whole rfc822 message in one scan
   scan_parts = true,          -- each MIME part (attachment) separately
@@ -122,18 +125,24 @@ local function check_cb(task)
   end
   if #jobs == 0 then return end
 
-  -- Fan out the scans; collect distinct matched rule names across all buffers,
-  -- then insert one result with the rule names as options. We track outstanding
-  -- jobs so the symbol is inserted once, after the last response.
+  -- Fan out the scans; collect distinct matched rule names across all buffers.
+  -- URLHAUS_* matches (malware-URL hits from yarad's URLhaus check) go to their
+  -- own symbol so they can be scored separately from YARA rule matches; the
+  -- specific URLHAUS_* names become that symbol's options. One insert per symbol,
+  -- after the last response.
   local seen = {}
-  local rules = {}
+  local yara_rules = {}
+  local url_rules = {}
   local pending = #jobs
 
   local function finish()
     pending = pending - 1
     if pending > 0 then return end
-    if #rules > 0 then
-      task:insert_result(settings.symbol, 1.0, rules)
+    if #yara_rules > 0 then
+      task:insert_result(settings.symbol, 1.0, yara_rules)
+    end
+    if #url_rules > 0 then
+      task:insert_result(settings.urlhaus_symbol, 1.0, url_rules)
     end
   end
 
@@ -142,7 +151,11 @@ local function check_cb(task)
       for _, m in ipairs(matches) do
         if m.rule and not seen[m.rule] then
           seen[m.rule] = true
-          rules[#rules + 1] = m.rule
+          if m.rule:sub(1, 8) == "URLHAUS_" then
+            url_rules[#url_rules + 1] = m.rule
+          else
+            yara_rules[#yara_rules + 1] = m.rule
+          end
         end
       end
       finish()
@@ -180,12 +193,20 @@ if not settings.scan_message and not settings.scan_parts then
   return
 end
 
-rspamd_config:register_symbol({
+local id = rspamd_config:register_symbol({
   name = settings.symbol,
   type = "callback",
   callback = check_cb,
   flags = "empty",
 })
 
-rspamd_logger.infox(rspamd_config, "%s: registered, backend=%s scan_message=%s scan_parts=%s",
-  N, settings.url, settings.scan_message, settings.scan_parts)
+-- URLhaus hits are inserted from the same callback; register the symbol as a
+-- virtual child so rspamd knows it and it can be scored in groups.conf.
+rspamd_config:register_symbol({
+  name = settings.urlhaus_symbol,
+  type = "virtual",
+  parent = id,
+})
+
+rspamd_logger.infox(rspamd_config, "%s: registered, backend=%s scan_message=%s scan_parts=%s urlhaus_symbol=%s",
+  N, settings.url, settings.scan_message, settings.scan_parts, settings.urlhaus_symbol)

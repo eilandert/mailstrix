@@ -125,6 +125,10 @@ over env, env wins over the default.
 | `YARAD_CACHE_SIZE` | `65536` | in-memory LRU entries |
 | `YARAD_REDIS_URL` | — | optional shared L2 cache, e.g. `redis://host:6379/6` |
 | `YARAD_REDIS_PREFIX` | `yara:scan:` | Redis key prefix |
+| `YARAD_METRICS_AUTH` | off | require the token for `/metrics` and `/version` (`/health` & `/ready` stay open) |
+| `YARAD_URLHAUS_KEY[_FILE]` | — | abuse.ch Auth-Key; enables the URLhaus malware-URL lookup (see below) |
+| `YARAD_URLHAUS_REFRESH` | `900` (s) | URLhaus feed refresh interval (floor 5 min) |
+| `YARAD_URLHAUS_MAX_URLS` | `64` | max URLs examined per message |
 | `YARAD_VERBOSE` | off | log one line per request |
 | `YARAD_LOG_STDOUT` | off | info/access logs to stdout (errors always go to stderr) |
 
@@ -181,6 +185,21 @@ hostile/poison file just falls back to a raw-only scan. The whole request shares
 one `YARAD_SCAN_TIMEOUT` budget across raw + every macro stream, so a document
 crafted with hundreds of modules can't monopolize a worker. Encrypted
 (ECMA-376) OOXML is detected and counted but not decrypted.
+
+## URLhaus malware-URL lookup (optional)
+
+Set an abuse.ch Auth-Key (free, <https://auth.abuse.ch/>) via `YARAD_URLHAUS_KEY`
+to also check every message — and every decompressed macro/RTF stream — for URLs
+that appear in the [URLhaus](https://urlhaus.abuse.ch/) feed of known
+malware-distribution links. The feed is downloaded once per `YARAD_URLHAUS_REFRESH`
+(floor 5 min, fair-use) into an in-memory set; lookups are local map hits, never a
+per-message API call, and a failed refresh keeps the previous set. Cheap defanging
+(`hxxp`, `host[.]tld`, `(dot)`) catches URLs hidden in document code.
+
+Hits come back as matches with rule names `URLHAUS_MALWARE_URL` (exact),
+`URLHAUS_MALWARE_HOST` (known-bad host), and a `_DEOBF` variant when only found
+after defanging. The rspamd plugin routes these to a separate `URLHAUS_MALWARE_URL`
+symbol so they score independently of YARA rules.
 
 ## Build & test
 

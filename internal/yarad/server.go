@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/eilandert/rspamd-yarad/internal/extract"
+	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
 
 // ScanEngine is what the server dispatches a request to. *Scanner is the
@@ -32,6 +33,8 @@ type ScanEngine interface {
 	ExtractMetrics() ExtractMetrics
 	// ReloadMetrics reports rule-reload activity for /metrics.
 	ReloadMetrics() ReloadMetrics
+	// URLhausMetrics reports the URLhaus checker state for /metrics.
+	URLhausMetrics() urlhaus.Metrics
 }
 
 // scanResponse is the JSON the rspamd plugin parses. Matches is empty (not
@@ -225,8 +228,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeText(w, http.StatusOK, "ready")
 	case r.Method == http.MethodGet && r.URL.Path == "/version":
+		if !s.metricsAuthed(r) {
+			writeText(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		s.serveVersion(w)
 	case r.Method == http.MethodGet && r.URL.Path == "/metrics":
+		if !s.metricsAuthed(r) {
+			writeText(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		s.serveMetrics(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/scan":
 		s.handleScan(w, r)
@@ -420,6 +431,18 @@ func (s *Server) acquireOn(ctx context.Context, sem chan struct{}) bool {
 	}
 }
 
+// metricsAuthed gates /metrics and /version. Open by default (Prometheus scrapes
+// without a secret); when YARAD_METRICS_AUTH=1 they require the same token as
+// /scan, so an accidentally-published 8079 doesn't leak rule count / fingerprint
+// / runtime behaviour. /health and /ready stay open either way (probes).
+func (s *Server) metricsAuthed(r *http.Request) bool {
+	if !s.cfg.MetricsAuth {
+		return true
+	}
+	ok, configured := s.authed(r)
+	return ok && configured
+}
+
 // authed validates the shared secret. configured is false when no token is set
 // (caller returns 503); ok is the constant-time comparison result. Accepts the
 // token as a Bearer Authorization header or X-YARAD-Token.
@@ -477,6 +500,17 @@ func (s *Server) serveMetrics(w http.ResponseWriter) {
 	}
 	gauge("reload_last_timestamp_seconds", "unix time of the last successful reload", rl.LastUnix)
 	gauge("reload_last_duration_ms", "wall-clock duration of the last reload attempt", rl.LastMillis)
+
+	// URLhaus malware-URL lookup (only meaningful when enabled).
+	uh := s.engine.URLhausMetrics()
+	if uh.Enabled {
+		fm("urlhaus_lookups_total", "buffers checked against the URLhaus feed", uh.Lookups)
+		fm("urlhaus_hits_total", "buffers with >=1 URLhaus match", uh.Hits)
+		fm("urlhaus_refresh_failures_total", "URLhaus feed refresh failures", uh.RefreshFailures)
+		gauge("urlhaus_feed_urls", "URLs in the loaded URLhaus feed", uh.FeedURLs)
+		gauge("urlhaus_feed_hosts", "hosts in the loaded URLhaus feed", uh.FeedHosts)
+		gauge("urlhaus_last_refresh_timestamp_seconds", "unix time of the last successful feed refresh", uh.LastRefreshUnix)
+	}
 	writeRaw(w, http.StatusOK, "text/plain; version=0.0.4", []byte(b.String()))
 }
 

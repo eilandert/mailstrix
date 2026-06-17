@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
 
 func get(s *Server, path string) *httptest.ResponseRecorder {
@@ -79,6 +81,37 @@ func TestScanClientCanceled(t *testing.T) {
 	}
 }
 
+func TestMetricsAuth(t *testing.T) {
+	s := newTestServer(&fakeEngine{count: 1}, "tok")
+	// Default: /metrics and /version are open.
+	if w := get(s, "/metrics"); w.Code != http.StatusOK {
+		t.Errorf("metrics open by default: %d", w.Code)
+	}
+	// Enabled: 401 without the token.
+	s.cfg.MetricsAuth = true
+	if w := get(s, "/metrics"); w.Code != http.StatusUnauthorized {
+		t.Errorf("metrics unauth: %d want 401", w.Code)
+	}
+	if w := get(s, "/version"); w.Code != http.StatusUnauthorized {
+		t.Errorf("version unauth: %d want 401", w.Code)
+	}
+	// With the token: allowed.
+	r := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	r.Header.Set("X-YARAD-Token", "tok")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("metrics authed: %d want 200", w.Code)
+	}
+	// Probes stay open regardless.
+	if w := get(s, "/health"); w.Code != http.StatusOK {
+		t.Errorf("health must stay open under metrics auth: %d", w.Code)
+	}
+	if w := get(s, "/ready"); w.Code != http.StatusOK {
+		t.Errorf("ready must stay open under metrics auth: %d", w.Code)
+	}
+}
+
 func TestShutdownSetsDraining(t *testing.T) {
 	s := newTestServer(&fakeEngine{count: 1}, "tok")
 	// Shutdown before ListenAndServe has stored a server: returns nil, still
@@ -109,10 +142,11 @@ func (f *fakeEngine) Scan(buf []byte) ([]Match, error) {
 	}
 	return f.matches, f.err
 }
-func (f *fakeEngine) RuleCount() int64               { return f.count }
-func (f *fakeEngine) Fingerprint() string            { return f.fp }
-func (f *fakeEngine) ExtractMetrics() ExtractMetrics { return ExtractMetrics{} }
-func (f *fakeEngine) ReloadMetrics() ReloadMetrics   { return ReloadMetrics{} }
+func (f *fakeEngine) RuleCount() int64                { return f.count }
+func (f *fakeEngine) Fingerprint() string             { return f.fp }
+func (f *fakeEngine) ExtractMetrics() ExtractMetrics  { return ExtractMetrics{} }
+func (f *fakeEngine) ReloadMetrics() ReloadMetrics    { return ReloadMetrics{} }
+func (f *fakeEngine) URLhausMetrics() urlhaus.Metrics { return urlhaus.Metrics{} }
 
 func newTestServer(eng ScanEngine, token string) *Server {
 	cfg := &Config{Token: token, MaxConcurrent: 4, MaxBody: 1 << 20, BackendTimeout: 0}
