@@ -62,6 +62,11 @@ type Scanner struct {
 	// Optional abuse.ch URLhaus malware-URL lookup (nil when no Auth-Key set).
 	urlhaus    *urlhaus.Checker
 	urlhausMax int
+
+	// denylist holds rule names (lowercase) whose matches are dropped from every
+	// result — public-ruleset demo/noise rules (e.g. Didier's `http`) that are
+	// pure false positives for mail. nil/empty means no filtering.
+	denylist map[string]struct{}
 }
 
 // ExtractMetrics is a snapshot of the document pre-extraction counters, surfaced
@@ -101,6 +106,7 @@ func NewScanner(cfg *Config, logf func(string, ...any)) (*Scanner, error) {
 		srcFile:     cfg.RulesPath,
 		urlhaus:     urlhaus.New(cfg.URLhausKey, cfg.URLhausRefresh, logf), // nil if no key
 		urlhausMax:  cfg.URLhausMaxURLs,
+		denylist:    cfg.RuleDenylist,
 	}
 	if s.urlhaus != nil {
 		logf("URLhaus malware-URL lookup enabled (refresh=%s, max_urls/msg=%d)", cfg.URLhausRefresh, cfg.URLhausMaxURLs)
@@ -388,6 +394,9 @@ func (s *Scanner) Scan(buf []byte) ([]Match, error) {
 		}
 		out = mergeMatches(out, m)
 	}
+	// Drop denylisted rule names (public-ruleset demo/noise rules) before URLhaus
+	// hits are added, so the synthetic URLHAUS_* matches are never affected.
+	out = s.filterDenied(out)
 	// URLhaus: check the raw message and every decompressed macro/RTF stream for
 	// known malware-distribution URLs (incl. defanged ones). Each distinct URL
 	// becomes its own match (deduped across buffers) so the mail history shows
@@ -409,6 +418,23 @@ func (s *Scanner) Scan(buf []byte) ([]Match, error) {
 		}
 	}
 	return out, nil
+}
+
+// filterDenied removes matches whose rule name is in the denylist (public-ruleset
+// demo/noise rules that are pure false positives for mail). Order is preserved
+// and the input's backing array is reused; a no-op when the denylist is empty.
+func (s *Scanner) filterDenied(in []Match) []Match {
+	if len(s.denylist) == 0 || len(in) == 0 {
+		return in
+	}
+	out := in[:0]
+	for _, m := range in {
+		if _, denied := s.denylist[strings.ToLower(m.Rule)]; denied {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // URLhausMetrics reports the URLhaus checker's state for /metrics, or a disabled

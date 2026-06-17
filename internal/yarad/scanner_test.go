@@ -77,6 +77,26 @@ func TestScannerMatch(t *testing.T) {
 	}
 }
 
+func TestScannerRuleDenylist(t *testing.T) {
+	// A denylisted rule name (case-insensitive) must be dropped from results, so
+	// public-ruleset noise rules like Didier's `http` never reach rspamd.
+	dir := writeRules(t, eicarRule)
+	cfg := &Config{RulesDir: dir, ScanTimeout: 0,
+		RuleDenylist: map[string]struct{}{"eicar_test_file": {}}}
+	cfg.sanitize()
+	s, err := NewScanner(cfg, func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("NewScanner: %v", err)
+	}
+	m, err := s.Scan(eicar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 0 {
+		t.Errorf("denylisted rule not filtered: %+v", m)
+	}
+}
+
 func TestScannerNoMatch(t *testing.T) {
 	s := newScanner(t, writeRules(t, eicarRule))
 	m, err := s.Scan([]byte("a perfectly innocent email body"))

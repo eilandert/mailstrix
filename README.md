@@ -161,6 +161,7 @@ over env, env wins over the default.
 | `YARAD_URLHAUS_KEY[_FILE]` | — | abuse.ch Auth-Key; enables the URLhaus malware-URL lookup (see below) |
 | `YARAD_URLHAUS_REFRESH` | `21600` (s, = 6 h) | URLhaus feed refresh interval (floor 5 min) |
 | `YARAD_URLHAUS_MAX_URLS` | `64` | max URLs examined per message |
+| `YARAD_RULE_DENYLIST` | `http` | comma-sep rule names to suppress (case-insensitive); public sets ship demo/noise rules (e.g. Didier's `http` = `"http" nocase`) that FP on nearly every mail. Set empty to disable. |
 | `YARAD_VERBOSE` | off | log one line per request |
 | `YARAD_LOG_STDOUT` | off | info/access logs to stdout (errors always go to stderr) |
 

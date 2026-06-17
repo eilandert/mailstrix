@@ -57,6 +57,13 @@ type Config struct {
 	URLhausRefresh time.Duration // YARAD_URLHAUS_REFRESH (default 360m, floor 5m)
 	URLhausMaxURLs int           // YARAD_URLHAUS_MAX_URLS  (per message, default 64)
 
+	// RuleDenylist suppresses matches for these rule names (case-insensitive).
+	// Public rulesets ship demo/noise rules that are pure false positives for
+	// mail — e.g. Didier Stevens' `http` rule (rtf.yara) is `$="http" nocase`,
+	// so it fires on virtually every message. Defaults to "http"; override with a
+	// comma-separated list, or set the var empty to disable filtering entirely.
+	RuleDenylist map[string]struct{} // YARAD_RULE_DENYLIST (comma-sep, default "http")
+
 	Version string // build version string, set by main (not from env); for /version
 }
 
@@ -84,6 +91,7 @@ func LoadConfig() *Config {
 		URLhausKey:     envOrFile("YARAD_URLHAUS_KEY"),
 		URLhausRefresh: envDur("YARAD_URLHAUS_REFRESH", 21600),
 		URLhausMaxURLs: envInt("YARAD_URLHAUS_MAX_URLS", 64),
+		RuleDenylist:   envSet("YARAD_RULE_DENYLIST", "http"),
 	}
 	c.sanitize()
 	return c
@@ -147,6 +155,23 @@ func envStr(name, def string) string {
 		return v
 	}
 	return def
+}
+
+// envSet parses a comma-separated env var into a case-insensitive set. The
+// default is used only when the var is UNSET; an explicitly empty value
+// (YARAD_RULE_DENYLIST=) yields an empty set so an operator can opt out.
+func envSet(name, def string) map[string]struct{} {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		v = def
+	}
+	out := make(map[string]struct{})
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.ToLower(strings.TrimSpace(part)); p != "" {
+			out[p] = struct{}{}
+		}
+	}
+	return out
 }
 
 func envInt(name string, def int) int {
