@@ -36,7 +36,7 @@ const (
 	feedURL = "https://urlhaus.abuse.ch/downloads/csv_online/"
 	// minRefresh is abuse.ch's fair-use floor for the CSV dumps.
 	minRefresh     = 5 * time.Minute
-	defaultRefresh = 15 * time.Minute
+	defaultRefresh = 360 * time.Minute
 	fetchTimeout   = 60 * time.Second
 	maxFeedBytes   = 256 << 20 // hard ceiling on a downloaded feed
 )

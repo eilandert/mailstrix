@@ -149,12 +149,30 @@ local function check_cb(task)
   for _, job in ipairs(jobs) do
     post(task, job.buf, job.what, function(matches)
       for _, m in ipairs(matches) do
-        if m.rule and not seen[m.rule] then
-          seen[m.rule] = true
+        if m.rule then
           if m.rule:sub(1, 8) == "URLHAUS_" then
-            url_rules[#url_rules + 1] = m.rule
-          else
-            yara_rules[#yara_rules + 1] = m.rule
+            -- For URLhaus hits the interesting thing is the malicious URL, not
+            -- the (constant) rule name, so show the URL itself as the option;
+            -- dedup on the URL so several distinct bad links don't collapse into
+            -- one. Append a short tag for the host/deobfuscated variants.
+            local url = (type(m.meta) == "table" and m.meta.url) or m.rule
+            if not seen["u:" .. url] then
+              seen["u:" .. url] = true
+              local tag = ""
+              if m.rule:find("_HOST") then tag = tag .. " (host)" end
+              if m.rule:find("_DEOBF") then tag = tag .. " (deobf)" end
+              url_rules[#url_rules + 1] = url .. tag
+            end
+          elseif not seen["y:" .. m.rule] then
+            -- Show "rule (source-file)" so a generic rule name (e.g. "http")
+            -- is traceable to the ruleset that shipped it. m.namespace is the
+            -- compiled rule file (yarad namespaces each file by its basename).
+            seen["y:" .. m.rule] = true
+            local opt = m.rule
+            if m.namespace and m.namespace ~= "" then
+              opt = m.rule .. " (" .. m.namespace .. ")"
+            end
+            yara_rules[#yara_rules + 1] = opt
           end
         end
       end

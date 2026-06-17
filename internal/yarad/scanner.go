@@ -22,9 +22,16 @@ import (
 // the "meta" map come straight from the rule definition so the plugin can score
 // or branch on them without yarad knowing anything rule-specific.
 type Match struct {
-	Rule string            `json:"rule"`
-	Tags []string          `json:"tags,omitempty"`
-	Meta map[string]string `json:"meta,omitempty"`
+	Rule string `json:"rule"`
+	// Namespace is the libyara namespace the rule was compiled into. yarad
+	// compiles each rule file into a namespace named after the file (see
+	// compileDir / compile-rules.sh `ns:path`), so this is effectively the
+	// source ruleset file (e.g. "sigbase-gen_url.yar") — surfaced so the rspamd
+	// plugin can show WHICH ruleset fired, not just the (often generic) rule
+	// name. Empty for synthetic matches (URLhaus) that aren't from a rule file.
+	Namespace string            `json:"namespace,omitempty"`
+	Tags      []string          `json:"tags,omitempty"`
+	Meta      map[string]string `json:"meta,omitempty"`
 }
 
 // Scanner compiles a set of YARA rules once and scans message bytes against
@@ -453,7 +460,7 @@ func (s *Scanner) scanOne(rules *yara.Rules, buf []byte, vba bool, timeout time.
 		if len(meta) == 0 {
 			meta = nil
 		}
-		out = append(out, Match{Rule: m.Rule, Tags: m.Tags, Meta: meta})
+		out = append(out, Match{Rule: m.Rule, Namespace: m.Namespace, Tags: m.Tags, Meta: meta})
 	}
 	return out, nil
 }

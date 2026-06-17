@@ -58,9 +58,12 @@ yesterday's exact file — rules catch tomorrow's. yarad compiles all of this
 * **`POST /scan`** — put raw message bytes (or one MIME part) in the body, get
   back the YARA rules that matched, as JSON:
   ```json
-  {"matches":[{"rule":"Suspicious_Macro","tags":["office"],"meta":{"author":"…"}}]}
+  {"matches":[{"rule":"Suspicious_Macro","namespace":"sigbase-gen_maldoc.yar","tags":["office"],"meta":{"author":"…"}}]}
   ```
-  The list is empty (`[]`, never `null`) when nothing matched.
+  The list is empty (`[]`, never `null`) when nothing matched. `namespace` is the
+  **source ruleset file** the rule was compiled from (yarad namespaces each rule
+  file by its name), so a generic rule like `http` is traceable to the set that
+  shipped it — the rspamd plugin shows it as `http (anyrun-phishing.yar)`.
 * **`GET /health`** — liveness: `200` while a rule set is loaded. Wired to the
   container `HEALTHCHECK`; stays `200` during a graceful drain so the container
   isn't killed mid-shutdown.
@@ -156,7 +159,7 @@ over env, env wins over the default.
 | `YARAD_REDIS_PREFIX` | `yara:scan:` | Redis key prefix |
 | `YARAD_METRICS_AUTH` | off | require the token for `/metrics` and `/version` (`/health` & `/ready` stay open) |
 | `YARAD_URLHAUS_KEY[_FILE]` | — | abuse.ch Auth-Key; enables the URLhaus malware-URL lookup (see below) |
-| `YARAD_URLHAUS_REFRESH` | `900` (s) | URLhaus feed refresh interval (floor 5 min) |
+| `YARAD_URLHAUS_REFRESH` | `21600` (s, = 6 h) | URLhaus feed refresh interval (floor 5 min) |
 | `YARAD_URLHAUS_MAX_URLS` | `64` | max URLs examined per message |
 | `YARAD_VERBOSE` | off | log one line per request |
 | `YARAD_LOG_STDOUT` | off | info/access logs to stdout (errors always go to stderr) |
@@ -275,8 +278,11 @@ per-message API call, and a failed refresh keeps the previous set. Cheap defangi
 
 Hits come back as matches with rule names `URLHAUS_MALWARE_URL` (exact),
 `URLHAUS_MALWARE_HOST` (known-bad host), and a `_DEOBF` variant when only found
-after defanging. The rspamd plugin routes these to a separate `URLHAUS_MALWARE_URL`
-symbol so they score independently of YARA rules.
+after defanging; the matched URL/host is carried in `meta.url`. The rspamd plugin
+routes these to a separate `URLHAUS_MALWARE_URL` symbol (so they score
+independently of YARA rules) and uses the **URL itself** as the symbol option —
+so the rspamd history shows the actual malicious link, not just a constant rule
+name — with a `(host)`/`(deobf)` tag for those variants.
 
 ## Build & test
 
@@ -297,7 +303,11 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
 
 * [`plugins/yara.lua`](rspamd/plugins/yara.lua) — the async plugin that POSTs to
-  yarad and raises a single `YARA_MATCH` symbol carrying the matched rule names.
+  yarad and raises a single `YARA_MATCH` symbol whose options are the matched
+  rules as `name (source-file.yar)` (so a hit is traceable to its ruleset).
+  URLhaus hits go to a separate `URLHAUS_MALWARE_URL` symbol whose options are
+  the matched **URLs** themselves (with a `(host)`/`(deobf)` tag for those
+  variants), so the history shows exactly which link tripped it.
 * [`rspamd.conf.local`](rspamd/rspamd.conf.local) — how to load a *custom* lua
   module (it must be an inline `yara { }` block + explicit `lua =` include, not a
   `local.d/` file; see the comments for why).

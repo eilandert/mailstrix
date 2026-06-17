@@ -54,7 +54,7 @@ type Config struct {
 
 	// URLhaus malware-URL lookup. Disabled unless an abuse.ch Auth-Key is set.
 	URLhausKey     string        // YARAD_URLHAUS_KEY[_FILE] — abuse.ch Auth-Key
-	URLhausRefresh time.Duration // YARAD_URLHAUS_REFRESH (default 15m, floor 5m)
+	URLhausRefresh time.Duration // YARAD_URLHAUS_REFRESH (default 360m, floor 5m)
 	URLhausMaxURLs int           // YARAD_URLHAUS_MAX_URLS  (per message, default 64)
 
 	Version string // build version string, set by main (not from env); for /version
@@ -82,7 +82,7 @@ func LoadConfig() *Config {
 		LogStdout:      envBool("YARAD_LOG_STDOUT"),
 		MetricsAuth:    envBool("YARAD_METRICS_AUTH"),
 		URLhausKey:     envOrFile("YARAD_URLHAUS_KEY"),
-		URLhausRefresh: envDur("YARAD_URLHAUS_REFRESH", 900),
+		URLhausRefresh: envDur("YARAD_URLHAUS_REFRESH", 21600),
 		URLhausMaxURLs: envInt("YARAD_URLHAUS_MAX_URLS", 64),
 	}
 	c.sanitize()

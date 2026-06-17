@@ -70,6 +70,11 @@ func TestScannerMatch(t *testing.T) {
 	if len(m[0].Tags) != 1 || m[0].Tags[0] != "test" {
 		t.Errorf("tags = %v, want [test]", m[0].Tags)
 	}
+	// Namespace must surface the source rule file so the rspamd plugin can show
+	// which ruleset fired (compileDir namespaces each file by its basename).
+	if m[0].Namespace != "eicar.yar" {
+		t.Errorf("namespace = %q, want %q", m[0].Namespace, "eicar.yar")
+	}
 }
 
 func TestScannerNoMatch(t *testing.T) {
