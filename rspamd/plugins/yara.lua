@@ -59,6 +59,10 @@ local settings = {
   -- Only scan parts at/above this many bytes individually (tiny text parts are
   -- already covered by scan_message; skipping them saves round-trips).
   min_part_size = 64,
+  -- Cap on /scan requests per message (whole-message job + part jobs). A mail
+  -- with dozens of parts can't fan out unbounded into yarad. Identical parts
+  -- (same attachment twice) are also deduped by their digest before this cap.
+  max_jobs = 32,
 }
 
 -- post sends buf to yarad and invokes cb(matches) with the decoded rule list
@@ -167,10 +171,19 @@ local function check_cb(task)
     end
   end
   if settings.scan_parts then
+    local seen_parts = {}
     for _, part in ipairs(task:get_parts() or {}) do
+      if #jobs >= settings.max_jobs then break end -- bound fan-out per message
       local content = part:get_content()
       if content and #content >= settings.min_part_size and #content <= settings.max_size then
-        jobs[#jobs + 1] = { buf = content, what = "part" }
+        -- Dedup identical parts (same attachment included twice) by the digest
+        -- rspamd already computed — saves a redundant /scan round-trip with no
+        -- coverage loss. Parts without a digest are kept (never dropped).
+        local dg = part:get_digest()
+        if not (dg and seen_parts[dg]) then
+          if dg then seen_parts[dg] = true end
+          jobs[#jobs + 1] = { buf = content, what = "part" }
+        end
       end
     end
   end

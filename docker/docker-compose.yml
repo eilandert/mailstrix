@@ -7,7 +7,11 @@ services:
     image: eilandert/rspamd-yarad:latest
     container_name: yarad
     restart: unless-stopped
-    mem_limit: 256m
+    # ~74 MB image + rules RSS (~90-200 MiB under macro/zip load) + in-flight
+    # request buffers (max_inflight × max_body). 512m gives burst/GC headroom;
+    # 256m was tight (measured ~198 MiB peak). Lower max_inflight/max_body or set
+    # an explicit YARAD_MAX_CONCURRENT if you must run leaner.
+    mem_limit: 512m
 
     # No `ports:` — not published to the host. Reachable only on the internal
     # docker network, by the static IPv4 the rspamd plugin uses.
