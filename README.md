@@ -157,6 +157,35 @@ For the full container setup (read-only rootfs, dropped capabilities, Docker
 secret for the token, static IPv4 on the rspamd network) see
 [`docker/docker-compose.yml`](docker/docker-compose.yml).
 
+### Scanning from the command line (no server)
+
+The same binary also scans locally — no HTTP server, no token — for one-off
+triage and shell pipelines. It compiles the same rule set (`YARAD_RULES` /
+`YARAD_RULES_DIR`, or `-rules`/`-rules-dir`) in-process:
+
+```sh
+yarad scan suspicious.doc            # one file
+yarad scan /var/mail/cur             # a maildir, recursed
+yarad scan - < /var/mail/cur/123:2,S # one maildir file on stdin
+cat msg.eml | yarad scan             # no path => stdin too
+yarad scan -json /tmp/quarantine     # machine-readable [{path,matches,error}]
+```
+
+Output is one line per file (`path: CLEAN` / `path: MATCH <rule> (<ruleset>)`),
+or a JSON array with `-json`. `-quiet` prints only the files that matched.
+`-filename NAME` overrides the name used for the `filename`/`extension`/
+`file_type` rule variables — needed for stdin, which carries no name of its own.
+Exit codes are scriptable: **0** = everything clean, **1** = at least one match,
+**2** = a usage / rule-load / read error.
+
+Two more helpers share the binary:
+
+```sh
+yarad check-rules                    # compile rules, print the count, exit non-zero on failure (a CI gate)
+yarad extract suspicious.doc         # show what the extractor carves (container type + member streams), no scan
+yarad extract -out /tmp/parts a.docm # …and write each carved member to a dir for inspection
+```
+
 ## Configuration
 
 Every setting is an environment variable, and also a `serve` CLI flag. Flags win

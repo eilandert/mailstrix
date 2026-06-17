@@ -8,9 +8,20 @@
 //
 // Usage:
 //
-//	yarad [serve] [flags]   run the HTTP backend on YARAD_HOST:YARAD_PORT
-//	yarad health            probe the local /health endpoint (HEALTHCHECK)
-//	yarad version           print the version
+//	yarad [serve] [flags]      run the HTTP backend on YARAD_HOST:YARAD_PORT
+//	yarad scan [flags] [path…] scan files/dirs (or stdin) locally, print matches
+//	yarad check-rules [flags]  compile the rule set, report count, exit non-zero on fail
+//	yarad extract [flags][path] dump what the extractor carves from a file (no scan)
+//	yarad health               probe the local /health endpoint (HEALTHCHECK)
+//	yarad version              print the version
+//
+// `yarad scan` compiles the same rule set in-process and scans without the HTTP
+// server, so it works for one-off triage and pipelines, e.g.
+//
+//	yarad scan suspicious.doc                 # one file
+//	yarad scan /var/mail/cur                  # a maildir (recursed)
+//	yarad scan - < /var/mail/cur/123:2,S      # a maildir file on stdin
+//	cat msg.eml | yarad scan                  # no path => stdin too
 //
 // SIGHUP recompiles the rule set without dropping the listener, so a rules
 // refresh (new image layer bind-mounted, or an operator edit) takes effect with
@@ -55,10 +66,16 @@ func run(args []string) int {
 	switch cmd {
 	case "serve":
 		return cmdServe(args)
+	case "scan":
+		return cmdScan(args)
+	case "check-rules":
+		return cmdCheckRules(args)
+	case "extract":
+		return cmdExtract(args)
 	case "health":
 		return cmdHealth()
 	default:
-		fmt.Fprintln(os.Stderr, "usage: yarad [serve|health|version]")
+		fmt.Fprintln(os.Stderr, "usage: yarad [serve|scan|check-rules|extract|health|version]")
 		return 2
 	}
 }
