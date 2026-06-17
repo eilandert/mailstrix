@@ -4,6 +4,8 @@
 [![Release](https://github.com/eilandert/rspamd-yarad/actions/workflows/release.yml/badge.svg)](https://github.com/eilandert/rspamd-yarad/actions/workflows/release.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/eilandert/rspamd-yarad.svg)](https://pkg.go.dev/github.com/eilandert/rspamd-yarad)
 
+> 📋 **[Status & roadmap](#status--roadmap)** — what's already implemented and what's planned.
+
 [rspamd](https://rspamd.com/) has **no built-in YARA module** (still true as of
 4.1.0; it's an [open feature request](https://github.com/rspamd/rspamd/discussions/3511)).
 `yarad` adds one without dragging YARA into rspamd itself. It runs the scanner as
