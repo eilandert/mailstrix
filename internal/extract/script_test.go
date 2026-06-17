@@ -69,9 +69,7 @@ func TestDecodeScriptAtEscapes(t *testing.T) {
 	// A body consisting only of @-escapes produces the literal escape chars.
 	// The combination index stays at 0 throughout (no substitutable bytes).
 	encodedBody := []byte("@&@#@*@!@$")
-	want := []byte("\n\r><<"[0:1])
-	// Build expected manually.
-	want = []byte{'\n', '\r', '>', '<', '@'}
+	want := []byte{'\n', '\r', '>', '<', '@'}
 
 	got := decodeScript(encodedBody)
 	if !bytes.Equal(got, want) {
