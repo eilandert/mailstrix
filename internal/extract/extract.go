@@ -33,7 +33,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg"
+const Version = "ole2+msi+vbe+msg+onenote"
 
 // OLE2/CFB compound-document magic (legacy .doc/.xls, the vbaProject.bin
 // embedded in OOXML, AND the encrypted-OOXML wrapper) and the local-file-header
@@ -132,6 +132,10 @@ type Result struct {
 	// message store) and its nested attachment data streams were pulled out for
 	// scanning.
 	IsMSG bool
+	// IsOneNote is true when buf was recognised as a OneNote section/TOC
+	// (.one/.onetoc2) and its embedded FileDataStoreObject payloads were carved
+	// out for scanning.
+	IsOneNote bool
 	// EncodedScript is true when >=1 MS Script Encoder block (#@~^...^#~@,
 	// i.e. an encoded VBScript/JScript, as in .vbe/.jse or embedded in a
 	// .wsf/.hta/.html/.sct) was found and decoded to cleartext for scanning.
@@ -165,6 +169,11 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 	case bytes.HasPrefix(buf, zipMagic):
 		res.IsDoc = true
 		fromOOXML(buf, &res, deadline)
+	case isOneNote(buf):
+		// A standalone OneNote section (.one) — neither OLE2 nor ZIP. Carve its
+		// embedded FileDataStoreObject payloads (the maldoc delivery vector).
+		res.IsDoc = true
+		fromOneNote(buf, &res)
 	default:
 		// Not a container. The buffer may still hide an MS Script Encoder block
 		// (#@~^...^#~@) — an encoded VBScript/JScript that raw-byte rules can't see
