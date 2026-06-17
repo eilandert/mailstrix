@@ -533,6 +533,7 @@ func (s *Server) serveMetrics(w http.ResponseWriter) {
 	fm("extract_archive_total", "buffers recognised as an archive (zip/gz/7z/rar/tar; members unpacked)", ex.Archive)
 	fm("extract_ole_package_total", "OLE2 docs with an embedded OLE Package object (Ole10Native carved)", ex.OLEPackage)
 	fm("extract_lnk_total", "Windows shell links (.lnk) with StringData (command-line args/paths) surfaced", ex.LNK)
+	fm("extract_pdf_total", "PDFs with FlateDecode object streams inflated for scanning", ex.PDF)
 	fm("extract_encoded_script_total", "buffers with >=1 decoded MS-Script-Encoder (VBE/JSE) block", ex.EncScript)
 	fm("extract_stream_matches_total", "rule hits attributable only to an extracted stream (not raw bytes)", ex.StreamMatches)
 

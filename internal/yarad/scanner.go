@@ -61,6 +61,7 @@ type Scanner struct {
 	exArchive                                                         atomic.Uint64 // buffers recognised as an archive (zip/gz/7z/rar/tar; members unpacked)
 	exOLEPackage                                                      atomic.Uint64 // OLE2 docs with an embedded OLE Package object (Ole10Native carved)
 	exLNK                                                             atomic.Uint64 // Windows shell links (.lnk) with StringData surfaced
+	exPDF                                                             atomic.Uint64 // PDFs with FlateDecode object streams inflated
 	exEncodedScript                                                   atomic.Uint64 // buffers with >=1 decoded MS-Script-Encoder block
 	exStreamMatches                                                   atomic.Uint64 // distinct rule hits that came ONLY from an extracted stream (not raw bytes)
 
@@ -109,6 +110,7 @@ type ExtractMetrics struct {
 	Archive    uint64 // buffers recognised as an archive (zip/gz/7z/rar/tar; members unpacked)
 	OLEPackage uint64 // OLE2 docs with an embedded OLE Package object (Ole10Native carved)
 	LNK        uint64 // Windows shell links (.lnk) with StringData surfaced
+	PDF        uint64 // PDFs with FlateDecode object streams inflated
 	EncScript  uint64 // buffers with >=1 decoded MS-Script-Encoder (VBE/JSE) block
 	// StreamMatches counts rule hits attributable ONLY to an extracted stream
 	// (macro/MSI/VBE), i.e. rules that did NOT already fire on the raw bytes —
@@ -131,6 +133,7 @@ func (s *Scanner) ExtractMetrics() ExtractMetrics {
 		Archive:       s.exArchive.Load(),
 		OLEPackage:    s.exOLEPackage.Load(),
 		LNK:           s.exLNK.Load(),
+		PDF:           s.exPDF.Load(),
 		EncScript:     s.exEncodedScript.Load(),
 		StreamMatches: s.exStreamMatches.Load(),
 	}
@@ -599,6 +602,9 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 	}
 	if res.IsLNK {
 		s.exLNK.Add(1)
+	}
+	if res.IsPDF {
+		s.exPDF.Add(1)
 	}
 	if res.EncodedScript {
 		s.exEncodedScript.Add(1)

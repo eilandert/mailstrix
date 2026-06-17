@@ -33,7 +33,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf"
 
 // OLE2/CFB compound-document magic (legacy .doc/.xls, the vbaProject.bin
 // embedded in OOXML, AND the encrypted-OOXML wrapper) and the local-file-header
@@ -132,6 +132,9 @@ type Result struct {
 	// message store) and its nested attachment data streams were pulled out for
 	// scanning.
 	IsMSG bool
+	// IsPDF is true when buf was a PDF whose FlateDecode object streams were
+	// inflated and surfaced for scanning.
+	IsPDF bool
 	// IsLNK is true when buf was a Windows shell link (.lnk) whose StringData
 	// fields (command-line arguments, paths) were surfaced for scanning.
 	IsLNK bool
@@ -191,6 +194,11 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 		// opaque outer bytes.
 		res.IsDoc = true
 		fromArchive(buf, &res, &archiveBudget{}, 0)
+	case isPDF(buf):
+		// A PDF: inflate its FlateDecode object streams so hidden JS / actions /
+		// embedded files are scanned, not buried in compressed objects.
+		res.IsDoc = true
+		fromPDF(buf, &res)
 	case isLNK(buf):
 		// A Windows shell link (.lnk): surface its StringData (command-line
 		// arguments / paths) so the dropper command is matched, not buried in the

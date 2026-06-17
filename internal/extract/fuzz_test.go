@@ -46,6 +46,8 @@ func FuzzExtract(f *testing.F) {
 		h[lnkFlagsOff] = byte(lnkHasLinkTargetIDList | lnkHasLinkInfo | lnkHasArguments | lnkIsUnicode)
 		f.Add(append(h, bytes.Repeat([]byte{0xFF}, 32)...))
 	}
+	// PDF magic + a stream keyword without endstream — fuzz the carve/inflate loop.
+	f.Add([]byte("%PDF-1.7\nobj\nstream\n\x78\x9c\x00\x00 garbage no endstream"))
 	f.Add([]byte{})
 	f.Add([]byte("plain text"))
 
