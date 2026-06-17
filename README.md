@@ -322,11 +322,12 @@ covers roughly 80% of what oletools does for mail, in-process and with no Python
 The remaining ~20% is the deep tail that still belongs to oletools/olefy, and why
 that scorer stays running in parallel: `olevba`'s **deobfuscation decode**
 (actually decoding Base64/hex/`StrReverse`/Dridex chains to reveal the hidden
-string, not just pattern-matching that they're present), **XLM / Excel-4.0 macro
-emulation**, and `rtfobj`'s **carve-and-decode** of embedded objects out of
-hostile RTF. yarad matches the *patterns* of obfuscation; it doesn't fully decode
-them. So `rspamd-olefy` remains the parallel deep-scan scorer until that tail is
-covered.
+string, not just pattern-matching that they're present) and **XLM / Excel-4.0
+macro emulation**. yarad matches the *patterns* of obfuscation; it doesn't fully
+decode them. (`rtfobj`'s carve-and-decode of embedded objects out of hostile RTF
+is now covered — see the RTF `\objdata` carve in the feature list.) So
+`rspamd-olefy` remains the parallel deep-scan scorer until that decode/emulation
+tail is covered.
 
 ## URLhaus malware-URL lookup (optional)
 
@@ -379,8 +380,8 @@ detector). CI fails on a bad commit before an image is ever published:
 # unit tests + go vet, against the same statically-linked libyara as production:
 docker build --target test -f docker/Dockerfile -t yarad-test .
 
-# the production image (distroless, nonroot, ~74 MB: ~37 MB compiled rules +
-# ~25 MB distroless base/libs + ~8 MB Go/libyara binary):
+# the production image (distroless, nonroot, ~89 MB: ~37 MB compiled rules,
+# ~8 MB statically-linked Go/libyara binary, the rest distroless base/libs):
 docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
     --build-arg CACHEBUST=$(date +%s) .
 
@@ -435,7 +436,7 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
 - [x] **Tiered scoring** — `YARA_MALWARE`/`YARA_EXPLOIT`/`YARA_PHISHING`/`YARA`/`YARA_SUSPICIOUS` + `URLHAUS_MALWARE_URL`
 - [x] rspamd plugin fan-out bounded (`max_jobs` cap + per-part dedup)
 - [x] SIGHUP rule reload (atomic swap, keeps old rules on a bad edit)
-- [x] Distroless, non-root, read-only rootfs (~74 MB)
+- [x] Distroless, non-root, read-only rootfs (~89 MB)
 
 ### Planned (sorted low-investment → high-return)
 
