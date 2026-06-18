@@ -307,6 +307,14 @@ On top of the public sets, yarad bakes its own local heuristics from
   instruction that begins with `DDE` or `DDEAUTO`. This rule matches that stream,
   covering macro-free command execution via DDE fields (T1559.002). Score 55,
   tagged `suspicious`, routes to `YARA_SUSPICIOUS`.
+- `XLM_Hidden_Macrosheet` (`xlm_macrosheet.yara`) — **hidden Excel-4.0 macrosheet**
+  detection. The extractor performs structural-only (zero execution) detection in
+  two paths: for OOXML workbooks it checks `xl/workbook.xml` for sheets with
+  `state="hidden"` or `state="veryHidden"` when an `xl/macrosheets/` part is
+  present; for legacy `.xls` (BIFF8/OLE2) it scans `BOUNDSHEET8` records in the
+  `Workbook` stream for sheets with `dt=0x01` (Excel-4.0 macro type) and hidden
+  state bits set. Each hit emits a synthetic `XLM-HIDDEN-MACROSHEET <state> <name>`
+  stream. This rule matches that stream. Score 60, tagged `suspicious`.
 - `LOLBins_Invocation` / `WMI_Process_Spawn` / `PowerShell_Abuse_Flags` /
   `Maldoc_AntiAnalysis_Evasion` (`intent.yara`) — **behaviour/intent** heuristics.
   Each pairs a tool or keyword with a *specific* abusive form so a bare mention
@@ -452,6 +460,7 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 - [x] OOXML remote-template injection (`*/_rels/*.rels` external-relationship scan + `OOXML_Remote_Template` rule)
 - [x] OOXML DDE/DDEAUTO field detection (`word/document.xml` field-instruction scan + `Maldoc_DDE_Field` rule)
 - [x] Intent rules (`intent.yara`): LOLBin invocation, WMI `Win32_Process.Create`, PowerShell abuse flags, anti-analysis/evasion
+- [x] XLM hidden-macrosheet detection (OOXML veryHidden+macrosheets, legacy xls BIFF BOUNDSHEET)
 - [ ] ThreatFox / Feodo Tracker IOC feeds (domains/IPs)
 - [ ] File-level fuzzy hashing (TLSH/ssdeep)
 - [ ] CHM / CAB / MSIX extraction

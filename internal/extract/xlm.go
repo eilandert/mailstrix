@@ -1,0 +1,286 @@
+package extract
+
+// XLM hidden-macrosheet detection. Structural analysis only — zero macro
+// execution. Two container forms are handled:
+//
+//   - OOXML (xlsm/xlsb/xlam): fromOOXMLXLM reads xl/workbook.xml from the
+//     already-opened zip, checks whether any <sheet> element declares
+//     state="veryHidden" or state="hidden" AND the workbook zip contains a
+//     xl/macrosheets/ part (confirming Excel-4.0 macro content), and emits a
+//     synthetic "XLM-HIDDEN-MACROSHEET <state> <name>" stream for each match.
+//
+//   - Legacy xls (BIFF8, OLE2): fromBIFFXLM reads the Workbook (or Book) stream
+//     from the already-parsed OLE2, scans BOUNDSHEET8 records (type 0x0085), and
+//     emits the same marker when the record's dt field (sheet type) is 0x01
+//     (Excel-4.0 macro) AND the hidden-state bits indicate hidden or veryHidden.
+//
+// Both helpers follow the fail-open contract: any parse error silently returns
+// with no streams emitted (the raw-bytes scan still happens). Neither panics.
+
+import (
+	"archive/zip"
+	"bytes"
+	"encoding/binary"
+	"encoding/xml"
+	"io"
+	"strings"
+	"time"
+
+	"www.velocidex.com/golang/oleparse"
+)
+
+// XLM extraction caps — intentionally modest; an xlsm with thousands of
+// hidden macrosheets is anomalous and we don't want to flood Streams.
+const (
+	// maxXLMSheets caps BOUNDSHEET records scanned per BIFF stream.
+	maxXLMSheets = 1024
+	// maxBytesWorkbookXML caps the xl/workbook.xml read (zip-bomb guard).
+	maxBytesWorkbookXML = 2 << 20
+	// maxXLMMarkers caps synthetic XLM-HIDDEN-MACROSHEET streams per document.
+	maxXLMMarkers = 64
+)
+
+// xlmHiddenStateLabel maps BIFF hidden-state bit values (grbit byte 0, bits 0–1)
+// to the label used in the marker stream.
+var xlmHiddenStateLabel = [4]string{
+	0: "", // visible — no marker
+	1: "hidden",
+	2: "veryHidden",
+	3: "hidden", // reserved, treat as hidden
+}
+
+// fromOOXMLXLM reads xl/workbook.xml from the already-opened OOXML zip and
+// appends "XLM-HIDDEN-MACROSHEET <state> <name>" synthetic streams to *out for
+// each sheet whose state is "hidden" or "veryHidden" AND for which the workbook
+// zip contains an xl/macrosheets/ part (confirming Excel-4.0 macro content).
+// Fail-open: any read/parse error silently returns with no streams added.
+// Bounded by maxBytesWorkbookXML + maxXLMMarkers; respects expired(deadline).
+func fromOOXMLXLM(zr *zip.Reader, out *[][]byte, deadline time.Time) {
+	if expired(deadline) {
+		return
+	}
+
+	// Build a name-set of all zip entries for fast membership tests.
+	names := make(map[string]struct{}, len(zr.File))
+	for _, f := range zr.File {
+		names[f.Name] = struct{}{}
+	}
+
+	// Check whether any xl/macrosheets/ part exists — required to avoid FPs on
+	// ordinary hidden sheets in workbooks that have no macro content at all.
+	hasMacrosheet := false
+	for name := range names {
+		if strings.HasPrefix(name, "xl/macrosheets/") {
+			hasMacrosheet = true
+			break
+		}
+	}
+	if !hasMacrosheet {
+		return
+	}
+
+	// Locate xl/workbook.xml.
+	var wbFile *zip.File
+	for _, f := range zr.File {
+		if f.Name == "xl/workbook.xml" {
+			wbFile = f
+			break
+		}
+	}
+	if wbFile == nil {
+		return
+	}
+	if wbFile.UncompressedSize64 > maxBytesWorkbookXML {
+		return // anomalously large — skip
+	}
+
+	rc, err := wbFile.Open()
+	if err != nil {
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(rc, maxBytesWorkbookXML))
+	rc.Close() // #nosec G104 -- zip entry close; error is unrecoverable here
+	if err != nil || len(raw) == 0 {
+		return
+	}
+
+	// Stream-parse xl/workbook.xml looking for <sheet> elements.
+	// Relevant attributes: name="…" state="hidden|veryHidden".
+	dec := xml.NewDecoder(bytes.NewReader(raw))
+	dec.Strict = false
+	for {
+		if expired(deadline) {
+			break
+		}
+		if countXLMMarkers(*out) >= maxXLMMarkers || len(*out) >= maxStreams {
+			break
+		}
+		tok, err := dec.Token()
+		if err != nil {
+			break // EOF or malformed — fail-open
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok || se.Name.Local != "sheet" {
+			continue
+		}
+		var sheetName, state string
+		for _, attr := range se.Attr {
+			switch attr.Name.Local {
+			case "name":
+				sheetName = attr.Value
+			case "state":
+				state = attr.Value
+			}
+		}
+		if state != "hidden" && state != "veryHidden" {
+			continue
+		}
+		// Emit marker — we already confirmed xl/macrosheets/ exists.
+		*out = append(*out, []byte("XLM-HIDDEN-MACROSHEET "+state+" "+sheetName))
+	}
+}
+
+// fromBIFFXLM reads the Workbook (or Book) stream from an already-parsed OLE2
+// compound file, scans its BIFF records for BOUNDSHEET8 (type 0x0085) entries,
+// and appends "XLM-HIDDEN-MACROSHEET <state> <name>" synthetic streams to
+// res.Streams for any sheet whose dt (sheet type) is 0x01 (Excel-4.0 macro)
+// AND whose hidden-state bits indicate hidden or veryHidden.
+//
+// BOUNDSHEET8 record layout (payload):
+//
+//	lbPlyPos  uint32 LE — stream position of BOF record
+//	grbit     uint16 LE — byte 0: hidden state (bits 0–1); byte 1: dt (sheet type)
+//	cch       uint8      — length of sheet name (characters)
+//	fHighByte uint8      — 0 = latin1, 1 = UTF-16 LE
+//	name      []byte     — cch bytes (latin1) or cch*2 bytes (UTF-16 LE)
+//
+// Fail-open: any parse error silently returns. Bounded by maxXLMSheets +
+// maxXLMMarkers; respects expired(deadline).
+func fromBIFFXLM(ole *oleparse.OLEFile, res *Result, deadline time.Time) {
+	if expired(deadline) {
+		return
+	}
+
+	// Locate the Workbook or Book stream.
+	var workbookData []byte
+	for _, streamName := range []string{"Workbook", "Book"} {
+		s := ole.FindStreamByName(streamName)
+		if s != nil {
+			workbookData = ole.GetStream(s.Index)
+			break
+		}
+	}
+	if len(workbookData) == 0 {
+		return
+	}
+
+	r := bytes.NewReader(workbookData)
+	scanned := 0
+	for {
+		if expired(deadline) {
+			break
+		}
+		if scanned >= maxXLMSheets {
+			break
+		}
+		if countXLMMarkers(res.Streams) >= maxXLMMarkers || len(res.Streams) >= maxStreams {
+			break
+		}
+
+		// BIFF record header: uint16 type + uint16 length.
+		var recType, recLen uint16
+		if err := binary.Read(r, binary.LittleEndian, &recType); err != nil {
+			break // EOF or malformed
+		}
+		if err := binary.Read(r, binary.LittleEndian, &recLen); err != nil {
+			break
+		}
+
+		if recType != 0x0085 {
+			// Not BOUNDSHEET8 — skip the payload.
+			if _, err := r.Seek(int64(recLen), io.SeekCurrent); err != nil {
+				break
+			}
+			continue
+		}
+		scanned++
+
+		// Read the BOUNDSHEET8 payload.
+		if recLen < 6 {
+			// Minimum: lbPlyPos(4) + grbit(2). Too short — malformed, skip.
+			if _, err := r.Seek(int64(recLen), io.SeekCurrent); err != nil {
+				break
+			}
+			continue
+		}
+		payload := make([]byte, recLen)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			break // malformed — fail-open
+		}
+
+		// grbit: byte 0 = hidden state (bits 0-1), byte 1 = dt (sheet type).
+		grbit0 := payload[4]
+		grbitDt := payload[5]
+		hiddenBits := grbit0 & 0x03
+		dt := grbitDt
+
+		// dt 0x01 = Excel-4.0 macro sheet; others are worksheet/chart/VB.
+		if dt != 0x01 {
+			continue
+		}
+		stateLabel := xlmHiddenStateLabel[hiddenBits]
+		if stateLabel == "" {
+			continue // visible macro sheet — no marker
+		}
+
+		// Decode the sheet name.
+		name := biffSheetName(payload[6:])
+		res.Streams = append(res.Streams, []byte("XLM-HIDDEN-MACROSHEET "+stateLabel+" "+name))
+	}
+}
+
+// biffSheetName decodes the name field from a BOUNDSHEET8 payload slice starting
+// at offset 0 (i.e. after lbPlyPos + grbit have been consumed). Layout:
+//
+//	[0] cch       uint8  — character count
+//	[1] fHighByte uint8  — 0 = latin1, 1 = UTF-16 LE
+//	[2…] name     bytes  — cch bytes (latin1) or cch*2 bytes (UTF-16 LE)
+//
+// Returns an empty string on any malformed input (fail-open).
+func biffSheetName(b []byte) string {
+	if len(b) < 2 {
+		return ""
+	}
+	cch := int(b[0])
+	fHigh := b[1]
+	if fHigh == 1 {
+		// UTF-16 LE
+		need := 2 + cch*2
+		if len(b) < need {
+			return ""
+		}
+		runes := make([]rune, cch)
+		for i := range runes {
+			runes[i] = rune(binary.LittleEndian.Uint16(b[2+i*2:]))
+		}
+		return string(runes)
+	}
+	// Latin-1
+	need := 2 + cch
+	if len(b) < need {
+		return ""
+	}
+	return string(b[2 : 2+cch])
+}
+
+// countXLMMarkers counts how many streams already carry the XLM-HIDDEN-MACROSHEET
+// prefix (used to enforce maxXLMMarkers).
+func countXLMMarkers(streams [][]byte) int {
+	n := 0
+	for _, s := range streams {
+		if bytes.HasPrefix(s, []byte("XLM-HIDDEN-MACROSHEET ")) {
+			n++
+		}
+	}
+	return n
+}

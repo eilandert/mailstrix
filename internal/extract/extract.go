@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm"
 
 // OLE2/CFB compound-document magic (legacy .doc/.xls, the vbaProject.bin
 // embedded in OOXML, AND the encrypted-OOXML wrapper) and the local-file-header
@@ -312,6 +312,9 @@ func fromOLE(buf []byte, res *Result, deadline time.Time) {
 		if !fromMSG(ole, res, deadline) && !fromMSI(ole, res, deadline) && !fromOLEPackage(ole, res, deadline) {
 			res.Failed = true
 		}
+		// Even when VBA extraction fails, a legacy spreadsheet may carry hidden
+		// XLM macrosheets in its Workbook stream — scan for BOUNDSHEET8 records.
+		fromBIFFXLM(ole, res, deadline)
 		return
 	}
 	res.Streams = codes(mods, nil)
@@ -319,6 +322,11 @@ func fromOLE(buf []byte, res *Result, deadline time.Time) {
 	// can ride alongside macros, so always carve it regardless of whether VBA was
 	// found — it's a no-op when the doc has no package stream.
 	fromOLEPackage(ole, res, deadline)
+	// Detect hidden Excel-4.0 macrosheets in legacy .xls BIFF8 streams. This is
+	// independent of VBA: XLM macro sheets use a different mechanism and their
+	// BOUNDSHEET8 records are in the Workbook stream, not a VBA project.
+	// fromBIFFXLM is a no-op when there is no Workbook/Book stream.
+	fromBIFFXLM(ole, res, deadline)
 	// No VBA found: the OLE2 may instead be an Outlook .msg (pull its nested
 	// attachment files out and scan them) or an MSI (dump its payload streams).
 	// Both helpers are no-ops for an OLE2 that isn't theirs. Try MSG first — a
@@ -522,6 +530,11 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time) {
 	// instructions. Each hit appends a synthetic "OOXML-DDE-FIELD <instr>" stream.
 	// Fail-open: malformed XML is silently skipped.
 	fromOOXMLDDE(zr, &out, deadline)
+	// Detect hidden Excel-4.0 macrosheets in OOXML workbooks (xlsm/xlsb/xlam).
+	// Each hidden/veryHidden sheet coinciding with an xl/macrosheets/ part appends
+	// a synthetic "XLM-HIDDEN-MACROSHEET <state> <name>" stream.
+	// Fail-open: any parse error is silently ignored.
+	fromOOXMLXLM(zr, &out, deadline)
 	res.Streams = out
 	// Every .bin we tried failed to parse and nothing came out: a document that
 	// looks macro-bearing but yields no usable VBA (obfuscated/corrupt/hostile).
