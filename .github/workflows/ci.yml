@@ -89,7 +89,11 @@ jobs:
             [ "$(docker inspect -f '{{.State.Health.Status}}' ys)" = healthy ] && break; sleep 1
           done
           [ "$(docker inspect -f '{{.State.Health.Status}}' ys)" = healthy ] || { docker logs ys; exit 1; }
-          docker logs ys 2>&1 | grep -c 'seeded rules cache' | grep -q 2  # seeded again after wipe
+          # Seeded a second time after the wipe. Capture the count into a var — do
+          # NOT pipe `grep -c` into `grep -q`, which closes the pipe early and
+          # SIGPIPEs grep -c (exit 141) under `bash -e`.
+          seeds=$(docker logs ys 2>&1 | grep -c 'seeded rules cache' || true)
+          echo "seed count: $seeds"; [ "$seeds" -ge 2 ]
           curl -s http://127.0.0.1:18080/ready | grep -q ready
           docker rm -f ys; docker volume rm yc-cache
 
