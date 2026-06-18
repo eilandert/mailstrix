@@ -502,3 +502,29 @@ func TestNotFound(t *testing.T) {
 		t.Errorf("unknown path = %d, want 404", w.Code)
 	}
 }
+
+// TestDecodeFilenameB64Variants covers the wire-format tolerance of the
+// X-YARAD-Filename decoder: standard padded base64, raw (unpadded) base64, and a
+// whitespace-folded value all decode to the same bytes; non-base64 garbage is
+// rejected (the scan still runs, just without metadata).
+func TestDecodeFilenameB64Variants(t *testing.T) {
+	const name = "invoice.exe"
+	padded := base64.StdEncoding.EncodeToString([]byte(name)) // "aW52b2ljZS5leGU="
+	raw := base64.RawStdEncoding.EncodeToString([]byte(name)) // no "=" padding
+	folded := padded[:4] + "\r\n " + padded[4:]               // CR/LF/space in the middle
+
+	for _, in := range []string{padded, raw, folded} {
+		got, ok := decodeFilenameB64(in)
+		if !ok {
+			t.Errorf("decodeFilenameB64(%q) = !ok, want decode to %q", in, name)
+			continue
+		}
+		if string(got) != name {
+			t.Errorf("decodeFilenameB64(%q) = %q, want %q", in, got, name)
+		}
+	}
+
+	if _, ok := decodeFilenameB64("!!!not base64!!!"); ok {
+		t.Error("garbage decoded as base64; want !ok")
+	}
+}

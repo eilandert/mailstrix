@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"strings"
+	"time"
 
 	"www.velocidex.com/golang/oleparse"
 )
@@ -56,7 +57,7 @@ const (
 // each embedded file's NativeData to res.Streams. Returns true if at least one
 // Ole10Native stream was found (whether or not its data parsed). Bounded by the
 // maxPackage* caps.
-func fromOLEPackage(ole *oleparse.OLEFile, res *Result) bool {
+func fromOLEPackage(ole *oleparse.OLEFile, res *Result, deadline time.Time) bool {
 	if ole == nil {
 		return false
 	}
@@ -70,7 +71,7 @@ func fromOLEPackage(ole *oleparse.OLEFile, res *Result) bool {
 			continue
 		}
 		found = true
-		if len(res.Streams) >= maxPackageObjects || total >= maxTotalPackage {
+		if len(res.Streams) >= maxPackageObjects || total >= maxTotalPackage || expired(deadline) {
 			break
 		}
 		b := ole.GetStream(d.Index)

@@ -276,8 +276,10 @@ func (s *Server) rulesStale() bool {
 }
 
 // serveVersion reports build + ruleset identity so a live FP/perf change can be
-// correlated with a specific image and rule bundle. Unauthenticated like
-// /health: it reveals version/rule-count/fingerprint, not message content.
+// correlated with a specific image and rule bundle. Open by default (like
+// /health) — it reveals version/rule-count/fingerprint, not message content —
+// but gated by the same token as /metrics when YARAD_METRICS_AUTH is set (the
+// ServeHTTP case returns 401 first), so an exposed port doesn't leak it.
 func (s *Server) serveVersion(w http.ResponseWriter) {
 	rl := s.engine.ReloadMetrics()
 	resp := map[string]any{

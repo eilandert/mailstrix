@@ -3,6 +3,7 @@ package extract
 import (
 	"bytes"
 	"testing"
+	"time"
 )
 
 // TestDecodeScriptCanonical verifies the screnc decoder against the canonical
@@ -48,7 +49,7 @@ func TestFromEncodedScriptCanonical(t *testing.T) {
 	want := []byte("MsgBox \"Hello\"WB+BEB~~")
 
 	res := &Result{}
-	fromEncodedScript(input, res)
+	fromEncodedScript(input, res, time.Time{})
 
 	if !res.EncodedScript {
 		t.Fatal("fromEncodedScript: EncodedScript flag not set")
@@ -92,7 +93,7 @@ func TestDecodeScriptPassThrough(t *testing.T) {
 // produces no streams and does not panic.
 func TestFromEncodedScriptEmpty(t *testing.T) {
 	res := &Result{}
-	fromEncodedScript([]byte("nothing to see here"), res)
+	fromEncodedScript([]byte("nothing to see here"), res, time.Time{})
 	if res.EncodedScript || len(res.Streams) != 0 {
 		t.Errorf("unexpected result on plain input: %+v", res)
 	}

@@ -157,3 +157,30 @@ func TestFlightDistinctKeysDontCoalesce(t *testing.T) {
 		t.Error("sequential distinct keys must not report shared")
 	}
 }
+
+// TestCacheGetReturnsIsolatedSlice guards the defensive copy in Get: a caller
+// that mutates the returned matches in place (e.g. an in-place filter) must NOT
+// corrupt the shared cached entry for other concurrent callers.
+func TestCacheGetReturnsIsolatedSlice(t *testing.T) {
+	c := newLRU(t, time.Minute, 16)
+	orig := []Match{{Rule: "A"}, {Rule: "B"}, {Rule: "C"}}
+	c.Put("k", orig)
+
+	got, ok := c.Get("k")
+	if !ok || len(got) != 3 {
+		t.Fatalf("first Get: ok=%v len=%d", ok, len(got))
+	}
+	// Mutate the returned slice in place (overwrite + truncate), as an in-place
+	// filter would.
+	got[0] = Match{Rule: "MUTATED"}
+	got = got[:1]
+	_ = got
+
+	again, ok := c.Get("k")
+	if !ok || len(again) != 3 {
+		t.Fatalf("second Get changed: ok=%v len=%d (cache corrupted by caller mutation)", ok, len(again))
+	}
+	if again[0].Rule != "A" || again[2].Rule != "C" {
+		t.Errorf("cached entry mutated by caller: %+v", again)
+	}
+}

@@ -490,6 +490,22 @@ func TestMergeMatches(t *testing.T) {
 	if got := mergeMatches(nil, []Match{{Rule: "X"}}); !sameRules(got, []string{"X"}) {
 		t.Errorf("nil into lost stream match: %+v", got)
 	}
+
+	// Identity is namespace+name, not name alone: a stream-only rule whose
+	// identifier collides with an UNRELATED raw match in a different namespace must
+	// be KEPT (public rulesets reuse rule names across files). Same namespace+name
+	// is still deduped.
+	rawNs := []Match{{Rule: "Dropper", Namespace: "fileA.yar"}}
+	merged := mergeMatches(rawNs, []Match{
+		{Rule: "Dropper", Namespace: "fileB.yar"}, // different rule, same name -> keep
+		{Rule: "Dropper", Namespace: "fileA.yar"}, // exact same rule -> dedup
+	})
+	if len(merged) != 2 {
+		t.Fatalf("namespace dedup wrong: got %d matches, want 2 (%+v)", len(merged), merged)
+	}
+	if merged[1].Namespace != "fileB.yar" {
+		t.Errorf("cross-namespace same-name match was dropped: %+v", merged)
+	}
 }
 
 func sameRules(m []Match, want []string) bool {

@@ -135,3 +135,22 @@ func TestExtractNotOneNote(t *testing.T) {
 		t.Error("plain text wrongly flagged IsOneNote")
 	}
 }
+
+// TestExtractOneNoteGUIDInDataNotReEmitted guards the carve-advance: the loop
+// must step past the consumed FileDataStoreObject DATA, not just its header. A
+// payload that itself contains the FDSO header GUID must NOT be re-found inside
+// the bytes already emitted and surfaced again as an overlapping near-duplicate.
+func TestExtractOneNoteGUIDInDataNotReEmitted(t *testing.T) {
+	// Embedded payload whose bytes include the sentinel header GUID.
+	payload := append([]byte("MZ before-"), oneFDSOHeaderGUID...)
+	payload = append(payload, []byte("-after the embedded GUID")...)
+	buf := buildOneNote(buildFDSO(payload, 0))
+
+	res := Extract(buf, time.Time{})
+	if len(res.Streams) != 1 {
+		t.Fatalf("GUID-in-data re-emitted: got %d streams, want exactly 1", len(res.Streams))
+	}
+	if !bytes.Equal(res.Streams[0], payload) {
+		t.Errorf("carved stream mismatch:\n  got  %q\n  want %q", res.Streams[0], payload)
+	}
+}

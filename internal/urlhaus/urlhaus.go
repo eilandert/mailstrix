@@ -312,10 +312,13 @@ func (c *Checker) Check(data []byte, maxURLs int) []Hit {
 // to a scannable form. Returns "" when nothing changed (so the caller skips a
 // redundant second pass). Cheap and bounded: plain string replacement only.
 func defang(data []byte) string {
-	s := string(data)
-	if !strings.ContainsAny(s, "[({xX") {
+	// Check on the raw bytes BEFORE materialising a string: Check runs on the
+	// whole message AND every extracted stream, so for the common no-defang case
+	// this avoids a full-buffer copy (up to MaxBody) on the hot path.
+	if !bytes.ContainsAny(data, "[({xX") {
 		return ""
 	}
+	s := string(data)
 	r := strings.NewReplacer(
 		"hxxps", "https", "hXXps", "https", "hxxp", "http", "hXXp", "http",
 		"[.]", ".", "(.)", ".", "{.}", ".",

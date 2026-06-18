@@ -150,11 +150,27 @@ func writeLocalManifest(path string, m RulesManifest) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	// Unique temp (not a fixed path+".tmp") so two concurrent fetch-rules runs
+	// can't clobber each other's in-progress write; rename is atomic same-fs.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".manifest-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // fetchManifest GETs and decodes the remote manifest (size-capped).

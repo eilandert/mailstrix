@@ -5,6 +5,7 @@ import (
 	"compress/flate"
 	"compress/zlib"
 	"io"
+	"time"
 )
 
 // PDF pre-extraction. Malicious PDFs hide their payload inside FlateDecode
@@ -58,7 +59,7 @@ func isPDF(buf []byte) bool {
 
 // fromPDF carves and inflates the object streams of a PDF, appending each
 // decompressed body to res.Streams. Sets IsPDF. Bounded by the maxPDF* caps.
-func fromPDF(buf []byte, res *Result) {
+func fromPDF(buf []byte, res *Result, deadline time.Time) {
 	res.IsPDF = true
 	scan := buf
 	if len(scan) > maxPDFScan {
@@ -68,8 +69,9 @@ func fromPDF(buf []byte, res *Result) {
 	pos := 0
 	// Cap inflate ATTEMPTS, not just emitted streams: a hostile PDF stuffed with
 	// many non-deflate `stream … endstream` bodies would otherwise force unbounded
-	// zlib/flate attempts (none of which increment len(res.Streams)).
-	for attempts < maxPDFStreams && len(res.Streams) < maxStreams && total < maxTotalPDF {
+	// zlib/flate attempts (none of which increment len(res.Streams)). The deadline
+	// also bounds wall-clock so many FlateDecode inflates can't overrun the budget.
+	for attempts < maxPDFStreams && len(res.Streams) < maxStreams && total < maxTotalPDF && !expired(deadline) {
 		rel := bytes.Index(scan[pos:], pdfStreamKW)
 		if rel < 0 {
 			break

@@ -182,32 +182,33 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 		res.IsDoc = true
 		fromOLE(buf, &res, deadline)
 	case bytes.HasPrefix(buf, zipMagic):
-		res.IsDoc = true
+		res.IsDoc = true // zip magic matched — a container attempt (per Result.IsDoc)
 		// A zip is either an OOXML/ODF Office document (handle via the macro path
 		// only — dumping its parts would scan ordinary body XML and invite FPs) or
-		// a plain archive whose members may be droppers (unpack them). Decide by
-		// the OOXML marker; never member-dump an Office doc.
+		// a plain archive whose members may be droppers (unpack them). The macro
+		// path also flags Failed on an unopenable (corrupt) zip; never member-dump
+		// an Office doc.
 		fromOOXML(buf, &res, deadline)
 		if !isOfficeZip(buf) {
-			fromArchive(buf, &res, &archiveBudget{}, 0)
+			fromArchive(buf, &res, &archiveBudget{}, 0, deadline)
 		}
 	case isArchive(buf):
 		// A non-zip archive (gz/7z/rar). Unpack members (recursing into nested
 		// archives/containers) so a dropped payload is scanned, not just the
 		// opaque outer bytes.
 		res.IsDoc = true
-		fromArchive(buf, &res, &archiveBudget{}, 0)
+		fromArchive(buf, &res, &archiveBudget{}, 0, deadline)
 	case isPDF(buf):
 		// A PDF: inflate its FlateDecode object streams so hidden JS / actions /
 		// embedded files are scanned, not buried in compressed objects.
 		res.IsDoc = true
-		fromPDF(buf, &res)
+		fromPDF(buf, &res, deadline)
 	case isRTF(buf):
 		// An RTF document: hex-decode its \objdata embedded-object groups so a
 		// dropped OLE2 doc / package / OLENativeStream payload (CVE-2017-0199 /
 		// -11882, OLE2Link) is scanned, not buried in the RTF hex.
 		res.IsDoc = true
-		fromRTF(buf, &res)
+		fromRTF(buf, &res, deadline)
 	case isLNK(buf):
 		// A Windows shell link (.lnk): surface its StringData (command-line
 		// arguments / paths) so the dropper command is matched, not buried in the
@@ -218,16 +219,26 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 		// A standalone OneNote section (.one) — neither OLE2 nor ZIP. Carve its
 		// embedded FileDataStoreObject payloads (the maldoc delivery vector).
 		res.IsDoc = true
-		fromOneNote(buf, &res)
+		fromOneNote(buf, &res, deadline)
 	default:
 		// Not a container. The buffer may still hide an MS Script Encoder block
 		// (#@~^...^#~@) — an encoded VBScript/JScript that raw-byte rules can't see
 		// because the script source is substituted. Found in .vbe/.jse files and
 		// embedded in .wsf/.hta/.html/.sct. Decode every block to cleartext so the
 		// keyword rules match. Best-effort; non-script input yields nothing.
-		fromEncodedScript(buf, &res)
+		fromEncodedScript(buf, &res, deadline)
 	}
 	return res
+}
+
+// expired reports whether the extraction deadline has passed. A zero deadline
+// (the caller disabled the time limit) never expires. All extractor loops that
+// decompress or carve attacker-controlled members consult this between items so
+// extraction — which runs inside the held scan-CPU slot — cannot overrun the
+// per-request wall-clock budget the scanner sets (see scanner.Scan). The
+// per-item/cumulative byte and count caps still apply regardless.
+func expired(deadline time.Time) bool {
+	return !deadline.IsZero() && time.Now().After(deadline)
 }
 
 // fromOLE handles an OLE2/CFB buffer: a legacy .doc/.xls, a bare vbaProject.bin,
@@ -265,7 +276,7 @@ func fromOLE(buf []byte, res *Result, deadline time.Time) {
 		// A macro-extraction error on a real MSI/.msg is expected (no VBA project),
 		// so don't fail outright — fall through to the MSG (Outlook) and MSI paths,
 		// which decide whether this OLE2 is one of those worth dumping.
-		if !fromMSG(ole, res) && !fromMSI(ole, res) && !fromOLEPackage(ole, res) {
+		if !fromMSG(ole, res, deadline) && !fromMSI(ole, res, deadline) && !fromOLEPackage(ole, res, deadline) {
 			res.Failed = true
 		}
 		return
@@ -274,14 +285,14 @@ func fromOLE(buf []byte, res *Result, deadline time.Time) {
 	// An embedded OLE Package object (dropped .exe/.bat in an Ole10Native stream)
 	// can ride alongside macros, so always carve it regardless of whether VBA was
 	// found — it's a no-op when the doc has no package stream.
-	fromOLEPackage(ole, res)
+	fromOLEPackage(ole, res, deadline)
 	// No VBA found: the OLE2 may instead be an Outlook .msg (pull its nested
 	// attachment files out and scan them) or an MSI (dump its payload streams).
 	// Both helpers are no-ops for an OLE2 that isn't theirs. Try MSG first — a
 	// .msg has no MSI CLSID so the order is safe.
 	if len(res.Streams) == 0 {
-		if !fromMSG(ole, res) {
-			fromMSI(ole, res)
+		if !fromMSG(ole, res, deadline) {
+			fromMSI(ole, res, deadline)
 		}
 	}
 }
@@ -294,7 +305,7 @@ func fromOLE(buf []byte, res *Result, deadline time.Time) {
 // invite false positives. Returns true if buf was an MSI (whether or not any
 // stream was emitted). Bounded by the maxMSI* caps; best-effort, never panics
 // out (the caller's recover still covers it).
-func fromMSI(ole *oleparse.OLEFile, res *Result) bool {
+func fromMSI(ole *oleparse.OLEFile, res *Result, deadline time.Time) bool {
 	if !isMSI(ole) {
 		return false
 	}
@@ -308,7 +319,7 @@ func fromMSI(ole *oleparse.OLEFile, res *Result) bool {
 		if d.Header.Mse != 2 || d.Header.Size == 0 {
 			continue
 		}
-		if len(res.Streams) >= maxMSIStreams || total >= maxTotalMSI {
+		if len(res.Streams) >= maxMSIStreams || total >= maxTotalMSI || expired(deadline) {
 			break
 		}
 		b := ole.GetStream(d.Index)
@@ -386,7 +397,7 @@ func isMSG(ole *oleparse.OLEFile) bool {
 // caller's recover covers it). Note: a nested attachment that is itself a doc/
 // archive is not recursively re-extracted here — it is scanned as raw bytes,
 // which still fires container/keyword rules; deep recursion is a separate item.
-func fromMSG(ole *oleparse.OLEFile, res *Result) bool {
+func fromMSG(ole *oleparse.OLEFile, res *Result, deadline time.Time) bool {
 	if !isMSG(ole) {
 		return false
 	}
@@ -400,7 +411,7 @@ func fromMSG(ole *oleparse.OLEFile, res *Result) bool {
 		if n != msgAttachData1 && n != msgAttachData2 {
 			continue
 		}
-		if len(res.Streams) >= maxMSGAttachments || total >= maxTotalMSG {
+		if len(res.Streams) >= maxMSGAttachments || total >= maxTotalMSG || expired(deadline) {
 			break
 		}
 		b := ole.GetStream(d.Index)

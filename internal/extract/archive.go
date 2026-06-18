@@ -117,22 +117,22 @@ func isArchive(buf []byte) bool {
 // res.Streams, recursing into members that are themselves containers. Returns
 // true if buf was a recognised archive (whether or not any member was emitted).
 // depth is the current nesting level (0 at the top); b is the shared budget.
-func fromArchive(buf []byte, res *Result, b *archiveBudget, depth int) bool {
-	if depth > maxArchiveDepth || b.spent() {
+func fromArchive(buf []byte, res *Result, b *archiveBudget, depth int, deadline time.Time) bool {
+	if depth > maxArchiveDepth || b.spent() || expired(deadline) {
 		return false
 	}
 	switch {
 	case bytes.HasPrefix(buf, zipMagic):
-		unpackZip(buf, res, b, depth)
+		unpackZip(buf, res, b, depth, deadline)
 		return true
 	case bytes.HasPrefix(buf, gzipMagic):
-		unpackGzip(buf, res, b, depth)
+		unpackGzip(buf, res, b, depth, deadline)
 		return true
 	case bytes.HasPrefix(buf, sevenZMagic):
-		unpack7z(buf, res, b, depth)
+		unpack7z(buf, res, b, depth, deadline)
 		return true
 	case bytes.HasPrefix(buf, rarMagic):
-		unpackRar(buf, res, b, depth)
+		unpackRar(buf, res, b, depth, deadline)
 		return true
 	default:
 		return false
@@ -142,7 +142,7 @@ func fromArchive(buf []byte, res *Result, b *archiveBudget, depth int) bool {
 // emitMember accounts one decompressed member against the shared budget, appends
 // it as a stream, and recurses into it if it is itself a container. The bytes are
 // clamped to maxBytesPerMember before this is called.
-func emitMember(data []byte, res *Result, b *archiveBudget, depth int) {
+func emitMember(data []byte, res *Result, b *archiveBudget, depth int, deadline time.Time) {
 	if len(data) == 0 || b.spent() || len(res.Streams) >= maxStreams {
 		return
 	}
@@ -153,8 +153,9 @@ func emitMember(data []byte, res *Result, b *archiveBudget, depth int) {
 	// Recurse: a member may be a nested archive OR another container type we know
 	// how to crack (OLE2 macro doc, OOXML, OneNote). Handle the nested-archive case
 	// here (shares the budget); for the other container types reuse their helpers
-	// so a .docm or .one dropped inside a zip is fully extracted too.
-	if depth+1 > maxArchiveDepth {
+	// so a .docm or .one dropped inside a zip is fully extracted too. The deadline
+	// carries down so a CPU-heavy nested decompressor can't overrun the budget.
+	if depth+1 > maxArchiveDepth || expired(deadline) {
 		return
 	}
 	switch {
@@ -163,18 +164,17 @@ func emitMember(data []byte, res *Result, b *archiveBudget, depth int) {
 		// unpacking. Mirror the top-level dispatch so an Office doc inside an
 		// archive isn't part-dumped (FP guard).
 		if isOfficeZip(data) {
-			fromOOXML(data, res, time.Time{})
+			fromOOXML(data, res, deadline)
 		} else {
-			fromArchive(data, res, b, depth+1)
+			fromArchive(data, res, b, depth+1, deadline)
 		}
 	case isArchive(data):
-		fromArchive(data, res, b, depth+1)
+		fromArchive(data, res, b, depth+1, deadline)
 	case bytes.HasPrefix(data, oleMagic):
-		// An OLE2 member: macro doc, MSI, or .msg. fromOLE handles all three. Use a
-		// zero deadline — the byte budget already bounds the work.
-		fromOLE(data, res, time.Time{})
+		// An OLE2 member: macro doc, MSI, or .msg. fromOLE handles all three.
+		fromOLE(data, res, deadline)
 	case isOneNote(data):
-		fromOneNote(data, res)
+		fromOneNote(data, res, deadline)
 	}
 }
 
@@ -192,14 +192,14 @@ func readMember(rc io.Reader) []byte {
 // general-archive counterpart to fromOOXML (which only reads *.bin for macros):
 // here every regular file member is surfaced, so a dropper zip's .exe/.js/.lnk
 // gets scanned. Directory entries and the size-cap-exceeding members are skipped.
-func unpackZip(buf []byte, res *Result, b *archiveBudget, depth int) {
+func unpackZip(buf []byte, res *Result, b *archiveBudget, depth int, deadline time.Time) {
 	zr, err := zip.NewReader(bytes.NewReader(buf), int64(len(buf)))
 	if err != nil {
 		return
 	}
 	res.IsArchive = true
 	for i, f := range zr.File {
-		if i >= maxZipEntries || b.spent() || len(res.Streams) >= maxStreams {
+		if i >= maxZipEntries || b.spent() || len(res.Streams) >= maxStreams || expired(deadline) {
 			break
 		}
 		if f.FileInfo().IsDir() || strings.HasSuffix(f.Name, "/") {
@@ -214,14 +214,14 @@ func unpackZip(buf []byte, res *Result, b *archiveBudget, depth int) {
 		}
 		data := readMember(rc)
 		_ = rc.Close()
-		emitMember(data, res, b, depth)
+		emitMember(data, res, b, depth, deadline)
 	}
 }
 
 // unpackGzip decompresses a single-stream gzip (and, if that stream is a tar,
 // walks the tar members too — .tar.gz being the common case). A bare gzip wraps
 // exactly one logical file; emit it (and recurse, so a gz-wrapped zip works).
-func unpackGzip(buf []byte, res *Result, b *archiveBudget, depth int) {
+func unpackGzip(buf []byte, res *Result, b *archiveBudget, depth int, deadline time.Time) {
 	gr, err := gzip.NewReader(bytes.NewReader(buf))
 	if err != nil {
 		return
@@ -235,18 +235,18 @@ func unpackGzip(buf []byte, res *Result, b *archiveBudget, depth int) {
 	// A .tar.gz: the decompressed stream is itself a tar of many members. Detect
 	// and walk it rather than emitting the whole tar blob as one stream.
 	if looksLikeTar(data) {
-		unpackTar(data, res, b, depth)
+		unpackTar(data, res, b, depth, deadline)
 		return
 	}
-	emitMember(data, res, b, depth)
+	emitMember(data, res, b, depth, deadline)
 }
 
 // unpackTar walks a (already-decompressed) tar and emits each regular-file member.
-func unpackTar(buf []byte, res *Result, b *archiveBudget, depth int) {
+func unpackTar(buf []byte, res *Result, b *archiveBudget, depth int, deadline time.Time) {
 	tr := tar.NewReader(bytes.NewReader(buf))
 	res.IsArchive = true
 	for {
-		if b.spent() || len(res.Streams) >= maxStreams {
+		if b.spent() || len(res.Streams) >= maxStreams || expired(deadline) {
 			break
 		}
 		h, err := tr.Next()
@@ -260,7 +260,7 @@ func unpackTar(buf []byte, res *Result, b *archiveBudget, depth int) {
 			continue
 		}
 		data := readMember(tr)
-		emitMember(data, res, b, depth)
+		emitMember(data, res, b, depth, deadline)
 	}
 }
 
@@ -272,14 +272,14 @@ func looksLikeTar(data []byte) bool {
 
 // unpack7z walks a 7-Zip archive and emits each file member. sevenzip is pure-Go.
 // Encrypted entries (no password) error on Open and are skipped.
-func unpack7z(buf []byte, res *Result, b *archiveBudget, depth int) {
+func unpack7z(buf []byte, res *Result, b *archiveBudget, depth int, deadline time.Time) {
 	zr, err := sevenzip.NewReader(bytes.NewReader(buf), int64(len(buf)))
 	if err != nil {
 		return
 	}
 	res.IsArchive = true
 	for _, f := range zr.File {
-		if b.spent() || len(res.Streams) >= maxStreams {
+		if b.spent() || len(res.Streams) >= maxStreams || expired(deadline) {
 			break
 		}
 		if f.FileInfo().IsDir() {
@@ -294,20 +294,20 @@ func unpack7z(buf []byte, res *Result, b *archiveBudget, depth int) {
 		}
 		data := readMember(rc)
 		_ = rc.Close()
-		emitMember(data, res, b, depth)
+		emitMember(data, res, b, depth, deadline)
 	}
 }
 
 // unpackRar walks a RAR archive (v4/v5, pure-Go rardecode) and emits each
 // regular-file member. Encrypted/solid members that error are skipped.
-func unpackRar(buf []byte, res *Result, b *archiveBudget, depth int) {
+func unpackRar(buf []byte, res *Result, b *archiveBudget, depth int, deadline time.Time) {
 	rr, err := rardecode.NewReader(bytes.NewReader(buf))
 	if err != nil {
 		return
 	}
 	res.IsArchive = true
 	for {
-		if b.spent() || len(res.Streams) >= maxStreams {
+		if b.spent() || len(res.Streams) >= maxStreams || expired(deadline) {
 			break
 		}
 		h, err := rr.Next()
@@ -321,6 +321,6 @@ func unpackRar(buf []byte, res *Result, b *archiveBudget, depth int) {
 			continue
 		}
 		data := readMember(rr)
-		emitMember(data, res, b, depth)
+		emitMember(data, res, b, depth, deadline)
 	}
 }

@@ -1,0 +1,16 @@
+# /etc/dovecot/yarad-scan.conf — config for yarad-scan-wrapper.
+# Sourced by the wrapper as a POSIX-sh fragment. Copy to /etc/dovecot/ and edit.
+
+# The lean client binary (download from the yarad GitHub release: yarad-scan-linux-amd64).
+YARAD_SCAN_BIN=/usr/local/bin/yarad-scan
+
+# Base URL of the central `yarad serve`.
+YARAD_URL=http://yarad.internal:8079
+
+# File holding the shared secret (must equal the server's YARAD_TOKEN).
+# Use a file, never an inline -token: it would show up in `ps`.
+# chmod 0440, owned by the dovecot/vmail user.
+YARAD_TOKEN_FILE=/etc/dovecot/yarad.token
+
+# Per-request HTTP timeout.
+YARAD_TIMEOUT=10s

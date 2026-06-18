@@ -779,19 +779,26 @@ func (s *Scanner) scanOne(rules *yara.Rules, buf []byte, vars scanVars, timeout 
 // raw-scan matches, skipping any rule already reported so a rule that fires on
 // both the container and its decompressed macro is listed once. Raw matches
 // keep their position; new ones are appended in stream order.
+//
+// Identity is namespace+identifier, NOT the identifier alone: yarad compiles
+// each rule file into its own namespace precisely because public rulesets reuse
+// the same rule name across files (see Match.Namespace). Keying on the name
+// alone would silently drop a genuinely different stream-only rule whose name
+// collides with an unrelated raw match — and undercount exStreamMatches.
 func mergeMatches(into, more []Match) []Match {
 	if len(more) == 0 {
 		return into
 	}
+	id := func(m Match) string { return m.Namespace + "/" + m.Rule }
 	seen := make(map[string]struct{}, len(into)+len(more))
 	for i := range into {
-		seen[into[i].Rule] = struct{}{}
+		seen[id(into[i])] = struct{}{}
 	}
 	for _, m := range more {
-		if _, dup := seen[m.Rule]; dup {
+		if _, dup := seen[id(m)]; dup {
 			continue
 		}
-		seen[m.Rule] = struct{}{}
+		seen[id(m)] = struct{}{}
 		into = append(into, m)
 	}
 	return into

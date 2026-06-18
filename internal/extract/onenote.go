@@ -3,6 +3,7 @@ package extract
 import (
 	"bytes"
 	"encoding/binary"
+	"time"
 )
 
 // MS-ONESTORE (OneNote) embedded-file extraction. A standalone OneNote section
@@ -74,11 +75,11 @@ func isOneNote(buf []byte) bool {
 // appends its embedded file bytes to res.Streams. Sets IsOneNote when buf was a
 // recognised OneNote file (whether or not any embedded file was found). Bounded
 // by the maxONE* caps; best-effort, a malformed object is skipped.
-func fromOneNote(buf []byte, res *Result) {
+func fromOneNote(buf []byte, res *Result, deadline time.Time) {
 	res.IsOneNote = true
 	var total int
 	rest := buf
-	for len(res.Streams) < maxStreams && len(res.Streams) < maxONEFiles && total < maxTotalONE {
+	for len(res.Streams) < maxStreams && len(res.Streams) < maxONEFiles && total < maxTotalONE && !expired(deadline) {
 		i := bytes.Index(rest, oneFDSOHeaderGUID)
 		if i < 0 {
 			break
@@ -103,9 +104,18 @@ func fromOneNote(buf []byte, res *Result) {
 			res.Streams = append(res.Streams, b)
 			total += len(b)
 		}
-		// Advance past this object's header so bytes.Index finds the next sentinel
-		// (the data region may itself contain the GUID, but stepping past the
-		// header is enough to make progress without re-emitting the same object).
-		rest = hdr[oneFDSODataOffset:]
+		// Advance past the data we just consumed so the next bytes.Index can't
+		// re-find a sentinel GUID *inside* the bytes already emitted (which would
+		// emit overlapping near-duplicates and waste the per-doc budget). When the
+		// claimed length was clamped to 0/short, still step past the header so the
+		// loop always makes forward progress.
+		adv := oneFDSODataOffset + int(n)
+		if adv <= oneFDSODataOffset {
+			adv = oneFDSODataOffset
+		}
+		if adv > len(hdr) {
+			adv = len(hdr)
+		}
+		rest = hdr[adv:]
 	}
 }

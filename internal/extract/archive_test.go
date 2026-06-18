@@ -11,6 +11,54 @@ import (
 	"time"
 )
 
+// TestExtractDeadlineStopsArchive verifies the extraction deadline is honored by
+// the archive path (not just fromOLE/fromOOXML): a plain dropper zip with several
+// members yields its members under a generous deadline, but an already-expired
+// deadline must short-circuit so no members are unpacked. Extraction runs inside
+// the held scan-CPU slot, so this bounds wall-clock against a CPU-heavy nested
+// decompressor.
+func TestExtractDeadlineStopsArchive(t *testing.T) {
+	zipBytes := buildZip(t, map[string][]byte{
+		"a.js":  bytes.Repeat([]byte("payload-a;"), 64),
+		"b.bat": bytes.Repeat([]byte("payload-b;"), 64),
+		"c.vbs": bytes.Repeat([]byte("payload-c;"), 64),
+	})
+
+	// Generous deadline: members are unpacked.
+	ok := Extract(zipBytes, time.Now().Add(10*time.Second))
+	if len(ok.Streams) == 0 {
+		t.Fatal("with a live deadline the plain zip members should be unpacked")
+	}
+
+	// Already-expired deadline: the archive walk must skip everything.
+	past := Extract(zipBytes, time.Now().Add(-time.Second))
+	if len(past.Streams) != 0 {
+		t.Errorf("expired deadline: archive members still unpacked: %d streams", len(past.Streams))
+	}
+}
+
+// TestExtractArchiveOfficeMemberNotPartDumped is the FP guard: a nested zip that
+// is an Office document (OOXML markers) dropped inside a plain archive must go
+// through the macro path only — its ordinary body parts (document.xml, …) must
+// NOT be surfaced as member streams (that would scan normal text and FP). A
+// macro-free .docx therefore contributes zero streams from inside the archive,
+// unlike a plain zip member which IS dumped.
+func TestExtractArchiveOfficeMemberNotPartDumped(t *testing.T) {
+	docx := buildZip(t, map[string][]byte{
+		"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types/>`),
+		"word/document.xml":   []byte("UNIQUE_BODY_TEXT_should_not_be_scanned_as_a_member"),
+		"_rels/.rels":         []byte("<Relationships/>"),
+	})
+	outer := buildZip(t, map[string][]byte{"report.docx": docx})
+
+	res := Extract(outer, time.Time{})
+	for i, s := range res.Streams {
+		if bytes.Contains(s, []byte("UNIQUE_BODY_TEXT_should_not_be_scanned_as_a_member")) {
+			t.Fatalf("office-doc body part %d was part-dumped from the archive (FP guard broken)", i)
+		}
+	}
+}
+
 // buildZip builds an in-memory zip from name→data entries.
 func buildZip(t *testing.T, entries map[string][]byte) []byte {
 	t.Helper()

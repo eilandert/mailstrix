@@ -1,0 +1,32 @@
+#!/bin/sh
+# yarad-scan-wrapper — bridge Dovecot Sieve `execute` to the central yarad.
+#
+# Install into the Dovecot sieve_execute_bin_dir (e.g.
+# /usr/lib/dovecot/sieve-execute/), chmod 0755, owned by the dovecot/vmail user.
+# Sieve `execute :pipe "yarad-scan-wrapper"` feeds the message on stdin; this
+# wrapper forwards it to `yarad-scan` and passes the exit code straight back:
+#   0 = clean (or scanner down -> fail open),  1 = YARA match.
+#
+# Config is read from /etc/dovecot/yarad-scan.conf if present (see the example
+# in this directory); the defaults below assume yarad on the internal network.
+
+set -eu
+
+CONF=/etc/dovecot/yarad-scan.conf
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+# Where the lean client lives, and how to reach the scanner.
+YARAD_SCAN_BIN="${YARAD_SCAN_BIN:-/usr/local/bin/yarad-scan}"
+YARAD_URL="${YARAD_URL:-http://yarad.internal:8079}"
+YARAD_TOKEN_FILE="${YARAD_TOKEN_FILE:-/etc/dovecot/yarad.token}"
+YARAD_TIMEOUT="${YARAD_TIMEOUT:-10s}"
+
+# -fail-open (the default) makes a transport/HTTP error exit 0 so a scanner
+# outage never blocks or bounces mail. -quiet: rely on the exit code only.
+exec "$YARAD_SCAN_BIN" \
+    -url "$YARAD_URL" \
+    -token-file "$YARAD_TOKEN_FILE" \
+    -timeout "$YARAD_TIMEOUT" \
+    -fail-open \
+    -quiet

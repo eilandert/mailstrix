@@ -1,6 +1,9 @@
 package extract
 
-import "bytes"
+import (
+	"bytes"
+	"time"
+)
 
 // MS Script Encoder ("screnc") support. screnc turns a VBScript/JScript source
 // into an opaque blob wrapped in `#@~^......==<encoded>......==^#~@`, used by
@@ -165,12 +168,12 @@ var combination = [64]byte{
 // fromEncodedScript finds and decodes every screnc block in buf, appending each
 // cleartext result to res.Streams. It sets EncodedScript when at least one block
 // decoded. Best-effort: a malformed/truncated block is skipped, the rest stand.
-func fromEncodedScript(buf []byte, res *Result) {
+func fromEncodedScript(buf []byte, res *Result, deadline time.Time) {
 	if !bytes.Contains(buf, []byte(scriptStart)) {
 		return
 	}
 	rest := buf
-	for len(res.Streams) < maxStreams && len(res.Streams) < maxEncodedScripts {
+	for len(res.Streams) < maxStreams && len(res.Streams) < maxEncodedScripts && !expired(deadline) {
 		i := bytes.Index(rest, []byte(scriptStart))
 		if i < 0 {
 			break
