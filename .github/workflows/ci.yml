@@ -50,7 +50,7 @@ jobs:
           EICAR='X5O!P%@AP[4\PZX54(P^)7CC)7}'"\$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!"'$H+H*'
 
           match=$(printf '%s' "$EICAR" | curl -s -H "X-YARAD-Token: ci" --data-binary @- http://127.0.0.1:18079/scan)
-          echo "match: $match"; echo "$match" | grep -q EICAR_Test_File
+          echo "match: $match"; grep -q EICAR_Test_File <<<"$match"
 
           clean=$(printf 'plain body' | curl -s -H "X-YARAD-Token: ci" --data-binary @- http://127.0.0.1:18079/scan)
           echo "clean: $clean"; [ "$clean" = '{"matches":[]}' ]
@@ -58,9 +58,12 @@ jobs:
           code=$(printf x | curl -s -o /dev/null -w '%{http_code}' -H "X-YARAD-Token: wrong" --data-binary @- http://127.0.0.1:18079/scan)
           [ "$code" = 401 ]
 
-          curl -s http://127.0.0.1:18079/metrics | grep -q 'yarad_rules 1'
-          curl -s http://127.0.0.1:18079/ready | grep -q ready
-          curl -s http://127.0.0.1:18079/version | grep -q extractor_version
+          # Read each endpoint into a var before grep: piping a producer straight
+          # into `grep -q` lets grep exit on first match and SIGPIPE the producer
+          # (exit 141) under `set -o pipefail`. (See the seed step's note.)
+          m=$(curl -s http://127.0.0.1:18079/metrics); grep -q 'yarad_rules 1' <<<"$m"
+          r=$(curl -s http://127.0.0.1:18079/ready);   grep -q ready <<<"$r"
+          v=$(curl -s http://127.0.0.1:18079/version); grep -q extractor_version <<<"$v"
           docker rm -f yc
 
       - name: smoke (maldoc heuristic rule — autoexec+write+execute AND-gate)
@@ -81,7 +84,7 @@ jobs:
           # (auto-exec + write + execute). Built at runtime — no real maldoc shipped.
           body=$(printf 'Sub AutoOpen()\n  Set o = CreateObject("ADODB.Stream")\n  o.SaveToFile "x.exe"\n  CreateObject("WScript.Shell").Run "powershell -enc ..."\nEnd Sub\n')
           match=$(printf '%s' "$body" | curl -s -H "X-YARAD-Token: ci" --data-binary @- http://127.0.0.1:18081/scan)
-          echo "match: $match"; echo "$match" | grep -q Maldoc_AutoExec_Write_Execute
+          echo "match: $match"; grep -q Maldoc_AutoExec_Write_Execute <<<"$match"
 
           # Negative: auto-exec + a write primitive (incl. CreateObject of a
           # write object) but NO launch primitive must NOT fire — proves the
@@ -105,7 +108,10 @@ jobs:
             [ "$(docker inspect -f '{{.State.Health.Status}}' ys)" = healthy ] && break; sleep 1
           done
           [ "$(docker inspect -f '{{.State.Health.Status}}' ys)" = healthy ] || { docker logs ys; exit 1; }
-          docker logs ys 2>&1 | grep -q 'seeded rules cache'
+          # Read into a var first: `docker logs … | grep -q` lets grep exit on the
+          # first match and SIGPIPE docker-logs (exit 141) under `set -o pipefail`
+          # — the flake that reddened PR #31. Assigning first avoids the pipe.
+          logs=$(docker logs ys 2>&1); grep -q 'seeded rules cache' <<<"$logs"
           rules=$(curl -s http://127.0.0.1:18080/metrics | grep '^yarad_rules ' | awk '{print $2}')
           echo "seeded rules: $rules"; [ "${rules:-0}" -gt 0 ]
 
@@ -122,7 +128,7 @@ jobs:
           # SIGPIPEs grep -c (exit 141) under `bash -e`.
           seeds=$(docker logs ys 2>&1 | grep -c 'seeded rules cache' || true)
           echo "seed count: $seeds"; [ "$seeds" -ge 2 ]
-          curl -s http://127.0.0.1:18080/ready | grep -q ready
+          r=$(curl -s http://127.0.0.1:18080/ready); grep -q ready <<<"$r"
           docker rm -f ys; docker volume rm yc-cache
 
   lint:
