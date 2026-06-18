@@ -86,6 +86,12 @@ func run(args []string) int {
 		case "version", "--version", "-version", "-v":
 			fmt.Println("yarad", version)
 			return 0
+		case "help", "--help", "-h":
+			// Caught here, before the leading-dash guard below, so `yarad -h` /
+			// `--help` show the command list (exit 0) instead of falling through to
+			// the serve FlagSet's own help.
+			printUsage(os.Stdout)
+			return 0
 		}
 		if !strings.HasPrefix(args[0], "-") {
 			cmd, args = args[0], args[1:]
@@ -106,7 +112,7 @@ func run(args []string) int {
 		return cmdInfo(args)
 	case "health":
 		return cmdHealth()
-	case "help", "--help", "-h":
+	case "help":
 		printUsage(os.Stdout)
 		return 0
 	default:
