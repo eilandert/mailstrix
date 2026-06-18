@@ -131,8 +131,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: actionlint (workflow syntax + embedded shell)
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
-      - name: shellcheck (rule fetch/compile scripts)
-        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:stable docker/fetch-rules.sh docker/compile-rules.sh
+      - name: shellcheck (rule fetch/compile/generate scripts)
+        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:stable docker/fetch-rules.sh docker/compile-rules.sh docker/generate-rules.sh
       - name: hadolint (Dockerfile; .hadolint.yaml ignores)
         run: docker run --rm -v "$PWD:/repo" -w /repo hadolint/hadolint hadolint docker/Dockerfile
       - name: osv-scanner (go.mod/go.sum dependency CVEs)

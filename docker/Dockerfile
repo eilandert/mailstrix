@@ -102,7 +102,18 @@ RUN YARAFORGE_SET="${YARAFORGE_SET}" YARAFORGE_URL="${YARAFORGE_URL}" SIGBASE_RE
         /usr/local/bin/fetch-rules.sh /rules/src \
     && /usr/local/bin/compile-rules.sh /rules/src /rules/compiled.yac \
     && rm -rf /rules/src \
-    && install -d -o 65532 -g 65532 /var/cache/yarad   # writable cache for nonroot (uid 65532)
+    && install -d -o 65532 -g 65532 /var/cache/yarad \
+    && yarac --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 > /rules/libyara.version
+
+# ---- rules export (for the home rule-generation cron; not a runtime image) --
+# `docker buildx build --target rules-export --output type=local,dest=out .`
+# drops the compiled bundle + the exact libyara/yarac version that wrote it, so
+# docker/generate-rules.sh can build the publish manifest. A .yac only loads on a
+# matching libyara, so the version is authoritative. Separate from `final` — a
+# normal image build never produces this.
+FROM scratch AS rules-export
+COPY --from=rules /rules/compiled.yac /compiled.yac
+COPY --from=rules /rules/libyara.version /libyara.version
 
 # ---- final (distroless, nonroot) -------------------------------------------
 FROM gcr.io/distroless/base-debian12:nonroot AS final
