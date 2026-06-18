@@ -28,10 +28,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/eilandert/rspamd-yarad/internal/atomicio"
 )
 
 const (
@@ -79,12 +82,13 @@ type hashSet struct{ m map[[32]byte]struct{} }
 // Checker holds the cached hash set and serves lookups. The zero value is not
 // usable; use New.
 type Checker struct {
-	set     atomic.Pointer[hashSet]
-	key     string
-	feedURL string
-	refresh time.Duration
-	client  *http.Client
-	logf    func(string, ...any)
+	set       atomic.Pointer[hashSet]
+	key       string
+	feedURL   string
+	refresh   time.Duration
+	client    *http.Client
+	logf      func(string, ...any)
+	cachePath string // persisted feed snapshot ("" disables persistence)
 
 	lastRefresh atomic.Int64
 	failures    atomic.Uint64
@@ -94,8 +98,10 @@ type Checker struct {
 
 // New builds a Checker and starts its background refresher. It returns nil when
 // key is empty (feature disabled), so callers can guard on `c != nil`. refresh
-// is clamped to the fair-use floor; feedURL falls back to the full dump.
-func New(key string, refresh time.Duration, feedURL string, logf func(string, ...any)) *Checker {
+// is clamped to the fair-use floor; feedURL falls back to the full dump. When
+// cacheDir is non-empty the feed snapshot is persisted there and loaded on
+// startup, so a restart serves from the last-good feed instead of an empty set.
+func New(key string, refresh time.Duration, feedURL, cacheDir string, logf func(string, ...any)) *Checker {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return nil
@@ -116,7 +122,11 @@ func New(key string, refresh time.Duration, feedURL string, logf func(string, ..
 		client:  &http.Client{Timeout: fetchTimeout},
 		logf:    logf,
 	}
+	if cacheDir != "" {
+		c.cachePath = filepath.Join(cacheDir, "malwarebazaar.bin")
+	}
 	c.set.Store(&hashSet{m: map[[32]byte]struct{}{}})
+	c.warmStart()
 	go c.refreshLoop()
 	return c
 }
@@ -164,8 +174,32 @@ func (c *Checker) refreshOnce() error {
 	}
 	c.set.Store(hs)
 	c.lastRefresh.Store(time.Now().Unix())
+	if c.cachePath != "" {
+		if err := atomicio.WriteWithBackup(c.cachePath, body, 0o600); err != nil {
+			c.logf("malwarebazaar feed cache write failed (non-fatal): %v", err)
+		}
+	}
 	c.logf("malwarebazaar feed loaded: %d hashes", len(hs.m))
 	return nil
+}
+
+// warmStart loads the persisted feed snapshot (if any) so lookups work from the
+// last-good feed before the first network refresh.
+func (c *Checker) warmStart() {
+	if c.cachePath == "" {
+		return
+	}
+	b, ok := atomicio.ReadCached(c.cachePath)
+	if !ok {
+		return
+	}
+	hs, err := parseFeed(b)
+	if err != nil {
+		c.logf("malwarebazaar warm-start parse failed (ignoring cached feed): %v", err)
+		return
+	}
+	c.set.Store(hs)
+	c.logf("malwarebazaar warm-start from cache: %d hashes", len(hs.m))
 }
 
 type statusError struct{ code int }

@@ -152,9 +152,9 @@ func NewScanner(cfg *Config, logf func(string, ...any)) (*Scanner, error) {
 		logf:        logf,
 		srcDir:      cfg.RulesDir,
 		srcFile:     cfg.RulesPath,
-		urlhaus:     urlhaus.New(cfg.URLhausKey, cfg.URLhausRefresh, logf), // nil if no key
+		urlhaus:     urlhaus.New(cfg.URLhausKey, cfg.URLhausRefresh, cfg.CacheDir, logf), // nil if no key
 		urlhausMax:  cfg.URLhausMaxURLs,
-		mbazaar:     mbazaar.New(cfg.MBazaarKey, cfg.MBazaarRefresh, cfg.MBazaarFeed, logf), // nil if no key
+		mbazaar:     mbazaar.New(cfg.MBazaarKey, cfg.MBazaarRefresh, cfg.MBazaarFeed, cfg.CacheDir, logf), // nil if no key
 		denylist:    cfg.RuleDenylist,
 		allowlist:   cfg.RuleAllowlist,
 	}

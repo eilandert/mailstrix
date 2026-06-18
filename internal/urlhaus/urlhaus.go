@@ -17,16 +17,20 @@
 package urlhaus
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/eilandert/rspamd-yarad/internal/atomicio"
 )
 
 const (
@@ -80,11 +84,12 @@ type ruleset struct {
 // Checker holds the cached feed and serves lookups. The zero value is not
 // usable; use New.
 type Checker struct {
-	rs      atomic.Pointer[ruleset]
-	key     string
-	refresh time.Duration
-	client  *http.Client
-	logf    func(string, ...any)
+	rs        atomic.Pointer[ruleset]
+	key       string
+	refresh   time.Duration
+	client    *http.Client
+	logf      func(string, ...any)
+	cachePath string // persisted feed snapshot ("" disables persistence)
 
 	lastRefresh atomic.Int64
 	failures    atomic.Uint64
@@ -94,8 +99,10 @@ type Checker struct {
 
 // New builds a Checker and starts its background refresher. It returns nil when
 // key is empty (feature disabled), so callers can guard on `c != nil`. refresh
-// is clamped to the fair-use floor.
-func New(key string, refresh time.Duration, logf func(string, ...any)) *Checker {
+// is clamped to the fair-use floor. When cacheDir is non-empty the feed snapshot
+// is persisted there and loaded on startup, so a restart serves immediately from
+// the last-good feed instead of an empty set until the first network refresh.
+func New(key string, refresh time.Duration, cacheDir string, logf func(string, ...any)) *Checker {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return nil
@@ -112,9 +119,32 @@ func New(key string, refresh time.Duration, logf func(string, ...any)) *Checker 
 		client:  &http.Client{Timeout: fetchTimeout},
 		logf:    logf,
 	}
+	if cacheDir != "" {
+		c.cachePath = filepath.Join(cacheDir, "urlhaus.csv")
+	}
 	c.rs.Store(&ruleset{urls: map[string]struct{}{}, hosts: map[string]struct{}{}})
+	c.warmStart()
 	go c.refreshLoop()
 	return c
+}
+
+// warmStart loads the persisted feed snapshot (if any) into the set so lookups
+// work from the last-good feed before the first network refresh completes.
+func (c *Checker) warmStart() {
+	if c.cachePath == "" {
+		return
+	}
+	b, ok := atomicio.ReadCached(c.cachePath)
+	if !ok {
+		return
+	}
+	rs, err := parseFeed(bytes.NewReader(b))
+	if err != nil {
+		c.logf("urlhaus warm-start parse failed (ignoring cached feed): %v", err)
+		return
+	}
+	c.rs.Store(rs)
+	c.logf("urlhaus warm-start from cache: %d urls / %d hosts", len(rs.urls), len(rs.hosts))
 }
 
 func (c *Checker) refreshLoop() {
@@ -151,12 +181,24 @@ func (c *Checker) refreshOnce() error {
 	if resp.StatusCode != http.StatusOK {
 		return &statusError{resp.StatusCode}
 	}
-	rs, err := parseFeed(resp.Body)
+	// Read the (capped) feed into memory so it can be both parsed and persisted.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFeedBytes))
+	if err != nil {
+		return err
+	}
+	rs, err := parseFeed(bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	c.rs.Store(rs)
 	c.lastRefresh.Store(time.Now().Unix())
+	// Persist the snapshot for warm-start on the next boot (best-effort: a write
+	// failure does not fail the refresh — the in-memory set is already updated).
+	if c.cachePath != "" {
+		if err := atomicio.WriteWithBackup(c.cachePath, body, 0o600); err != nil {
+			c.logf("urlhaus feed cache write failed (non-fatal): %v", err)
+		}
+	}
 	c.logf("urlhaus feed loaded: %d urls / %d hosts", len(rs.urls), len(rs.hosts))
 	return nil
 }

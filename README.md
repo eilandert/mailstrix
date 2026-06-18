@@ -7,10 +7,21 @@
 
 > 📋 **[Status & roadmap](#status--roadmap)** — what's already implemented and what's planned.
 
-[rspamd](https://rspamd.com/) has **no built-in YARA module** (still true as of
-4.1.0; it's an [open feature request](https://github.com/rspamd/rspamd/discussions/3511)).
-`yarad` adds one without dragging YARA into rspamd itself. It runs the scanner as
-a separate little HTTP service and lets rspamd ask it questions:
+**yarad scans your mail with YARA — the malware-detection rule engine — which
+[rspamd](https://rspamd.com/) can't do on its own.** YARA is what malware analysts
+use to recognise families of malicious files; thousands of good public rules exist
+for the kinds of payloads that arrive by email (booby-trapped Office docs, packed
+executables, phishing kits, script droppers). rspamd has **no built-in YARA
+module** (still true as of 4.1.0 — it's an [open feature request](https://github.com/rspamd/rspamd/discussions/3511)),
+so yarad adds one and wires it into rspamd's scoring.
+
+In practice: every message and attachment gets matched against ~11,000 curated
+public rules, and a hit raises the spam score (or rejects, your call) — the same
+way any other rspamd symbol does. The rules ship in the image and refresh on their
+own, so there's nothing to maintain day to day.
+
+yarad runs as a **small separate HTTP service**, not as code inside rspamd. rspamd
+asks it to scan a message; yarad answers with the rules that matched:
 
 ```
  ┌─────────────────┐  POST /scan ┌────────────┐    ┌──────────────┐
@@ -20,11 +31,10 @@ a separate little HTTP service and lets rspamd ask it questions:
  libyara rules = curated public YARA rulesets, baked into the image
 ```
 
-Why a separate service instead of a plugin? libyara is a C library (CGO). Calling
-it inside an rspamd worker would block rspamd's event loop and pull a heavy C
-dependency into the mail-flow image. Keeping it out-of-process means the rspamd
-side stays fully async, and the scanner can be restarted, scaled, or have its
-rules reloaded on its own. It's the same shape as the
+Why separate, and not a plugin? libyara is a C library (CGO); running it inside an
+rspamd worker would block rspamd's event loop and pull a heavy C dependency into
+the mail-flow image. Out-of-process, rspamd stays fully async and yarad can be
+restarted, scaled, or reload its rules on its own. It's the same shape as the
 [gozer](https://github.com/eilandert/gozer) DCC/Razor/Pyzor backend.
 
 ## YARA is more than a pile of regexes
