@@ -188,13 +188,14 @@ or a JSON array with `-json`. `-quiet` prints only the files that matched.
 Exit codes are scriptable: **0** = everything clean, **1** = at least one match,
 **2** = a usage / rule-load / read error.
 
-Two more helpers share the binary:
+More helpers share the binary (run `yarad help`, or `yarad <cmd> -h` for flags):
 
 ```sh
 yarad check-rules                    # compile rules, print the count, exit non-zero on failure (a CI gate)
 yarad extract suspicious.doc         # show what the extractor carves (container type + member streams), no scan
 yarad extract -out /tmp/parts a.docm # …and write each carved member to a dir for inspection
 yarad fetch-rules                    # update the cached rule bundle from the release (see below)
+yarad info                           # build / libyara / loaded-rules-bundle identity (-json for tooling)
 ```
 
 #### Updating rules without rebuilding (`fetch-rules`)

@@ -181,6 +181,9 @@ func (s *Server) logStartup(addr string) {
 // RepoURL is the project's source, logged at startup when log-stdout is on.
 const RepoURL = "https://github.com/eilandert/rspamd-yarad"
 
+// License is yarad's SPDX license id, surfaced by `yarad info`.
+const License = "MIT"
+
 // cgroupMemLimitMiB returns the container memory limit in MiB, or 0 if there is
 // no enforced limit or it can't be read. Supports cgroup v2 (memory.max) and v1
 // (memory.limit_in_bytes); "max" or the kernel's no-limit sentinel is unlimited.
@@ -277,7 +280,7 @@ func (s *Server) rulesStale() bool {
 // /health: it reveals version/rule-count/fingerprint, not message content.
 func (s *Server) serveVersion(w http.ResponseWriter) {
 	rl := s.engine.ReloadMetrics()
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"version":           s.cfg.Version,
 		"extractor_version": extract.Version,
 		"rules":             s.engine.RuleCount(),
@@ -286,7 +289,20 @@ func (s *Server) serveVersion(w http.ResponseWriter) {
 		"rules_mtime_unix":  rl.ModUnix,
 		"rules_stale":       s.rulesStale(),
 		"repo":              RepoURL,
-	})
+		"license":           License,
+	}
+	// Provenance of the loaded compiled bundle, when it came from the cache (set
+	// by fetch-rules / the seeded manifest): which published rule version, when it
+	// was generated, and the libyara it was compiled against.
+	if m, ok := LoadManifest(s.cfg.CacheDir); ok {
+		resp["rules_manifest"] = map[string]any{
+			"version":   m.Version,
+			"generated": m.Generated,
+			"libyara":   m.Libyara,
+			"count":     m.Rules,
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // maxBodyHardLimit is a constant ceiling above any MaxBody so the int(length)

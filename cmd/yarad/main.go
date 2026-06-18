@@ -58,6 +58,27 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
+// printUsage lists the subcommands. Per-subcommand flags are shown by passing
+// -h to that subcommand (each uses a flag.FlagSet).
+func printUsage(w *os.File) {
+	fmt.Fprint(w, `yarad — YARA scanning backend for rspamd
+
+usage: yarad <command> [flags]
+
+commands:
+  serve        run the HTTP backend (/scan, /metrics, /health) — the default
+  scan         scan files/dirs/stdin against the rules in-process
+  fetch-rules  download an updated compiled rule bundle into the cache
+  check-rules  compile the rules, print the count, exit non-zero on failure
+  extract      dump what the container extractor carves from a file (no scan)
+  info         print build, libyara, and loaded-rules-bundle identity
+  health       probe the local /health endpoint (container HEALTHCHECK)
+  version      print the version
+
+Run "yarad <command> -h" for that command's flags.
+`)
+}
+
 func run(args []string) int {
 	cmd := "serve"
 	if len(args) > 0 {
@@ -81,10 +102,15 @@ func run(args []string) int {
 		return cmdExtract(args)
 	case "fetch-rules":
 		return cmdFetchRules(args)
+	case "info":
+		return cmdInfo(args)
 	case "health":
 		return cmdHealth()
+	case "help", "--help", "-h":
+		printUsage(os.Stdout)
+		return 0
 	default:
-		fmt.Fprintln(os.Stderr, "usage: yarad [serve|scan|check-rules|extract|fetch-rules|health|version]")
+		printUsage(os.Stderr)
 		return 2
 	}
 }

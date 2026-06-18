@@ -120,6 +120,17 @@ func FetchRules(ctx context.Context, baseURL, cacheDir, ourLibyara string, hc *h
 	return res, nil
 }
 
+// LoadManifest returns the rules manifest stored alongside the cached bundle in
+// cacheDir, and whether one was found. Used by `yarad info` / `/version` to report
+// which rule version is loaded. A zero-value manifest + false means none present.
+func LoadManifest(cacheDir string) (RulesManifest, bool) {
+	if cacheDir == "" {
+		return RulesManifest{}, false
+	}
+	m := readLocalManifest(filepath.Join(cacheDir, manifestName))
+	return m, m.Version > 0
+}
+
 // readLocalManifest returns the cached manifest, or a zero-version manifest when
 // none exists / is unreadable (so a first run always sees an update available).
 func readLocalManifest(path string) RulesManifest {
