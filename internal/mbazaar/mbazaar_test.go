@@ -136,7 +136,7 @@ func TestPickSHA256FallbackColumn(t *testing.T) {
 }
 
 func TestNewDisabledNoKey(t *testing.T) {
-	if New("", 0, "", func(string, ...any) {}) != nil {
+	if New("", 0, "", "", func(string, ...any) {}) != nil {
 		t.Error("empty key must disable the checker (nil)")
 	}
 }

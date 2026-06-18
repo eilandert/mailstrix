@@ -1,9 +1,42 @@
 package urlhaus
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestWarmStartFromCache: a persisted feed snapshot in cacheDir is loaded into
+// the set at New() time, so a lookup hits before any network refresh. (New's
+// background refresh fires against the real feed with a bogus key and fails
+// harmlessly; warmStart ran synchronously first.)
+func TestWarmStartFromCache(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "urlhaus.csv"), []byte(sampleCSV), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := New("bogus-key", 0, dir, func(string, ...any) {})
+	if c == nil {
+		t.Fatal("New returned nil with a key set")
+	}
+	hits := c.Check([]byte("click http://evil.example/malware.exe now"), 64)
+	if len(hits) == 0 {
+		t.Error("warm-started feed should match the cached URL before any refresh")
+	}
+}
+
+// TestWarmStartBadCacheIgnored: a corrupt cache file is ignored (logged), New
+// still returns a usable (empty) checker.
+func TestWarmStartBadCacheIgnored(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "urlhaus.csv"), []byte("\x00\x01 not csv"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := New("bogus-key", 0, dir, func(string, ...any) {}); c == nil {
+		t.Error("New should still return a checker despite a bad cache")
+	}
+}
 
 const sampleCSV = `# Dump generated 2024-01-02
 # id,dateadded,url,url_status,last_online,threat,tags,urlhaus_link,reporter
@@ -99,7 +132,7 @@ func TestNormalizeURL(t *testing.T) {
 }
 
 func TestNewDisabledNoKey(t *testing.T) {
-	if New("", 0, func(string, ...any) {}) != nil {
+	if New("", 0, "", func(string, ...any) {}) != nil {
 		t.Error("empty key must disable the checker (nil)")
 	}
 }

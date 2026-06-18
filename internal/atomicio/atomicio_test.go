@@ -1,0 +1,65 @@
+package atomicio
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestWriteWithBackupCreatesAndBacksUp(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "sub", "feed.csv") // sub dir must be created
+
+	if err := WriteWithBackup(p, []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "v1" {
+		t.Fatalf("first write = %q", b)
+	}
+	// No backup yet on the first write.
+	if _, err := os.Stat(p + BackupSuffix); err == nil {
+		t.Error("unexpected backup after first write")
+	}
+
+	// Second write backs up the first.
+	if err := WriteWithBackup(p, []byte("v2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "v2" {
+		t.Fatalf("second write = %q", b)
+	}
+	if b, _ := os.ReadFile(p + BackupSuffix); string(b) != "v1" {
+		t.Fatalf("backup = %q, want v1", b)
+	}
+}
+
+func TestWriteWithBackupPerm(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	if err := WriteWithBackup(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("perm = %o, want 600", fi.Mode().Perm())
+	}
+}
+
+func TestReadCached(t *testing.T) {
+	dir := t.TempDir()
+	if _, ok := ReadCached(filepath.Join(dir, "missing")); ok {
+		t.Error("missing file should not be ok")
+	}
+	empty := filepath.Join(dir, "empty")
+	_ = os.WriteFile(empty, nil, 0o600)
+	if _, ok := ReadCached(empty); ok {
+		t.Error("empty file should not be ok")
+	}
+	full := filepath.Join(dir, "full")
+	_ = os.WriteFile(full, []byte("data"), 0o600)
+	if b, ok := ReadCached(full); !ok || string(b) != "data" {
+		t.Errorf("ReadCached = %q,%v", b, ok)
+	}
+}
