@@ -53,6 +53,12 @@ RUN go build -tags yara_static \
         -ldflags "-s -w -X main.version=${VERSION}" \
         -o /out/yarad ./cmd/yarad
 
+# yarad-scan: the lean Sieve/LDA client. Pure Go, no CGO/libyara — a small static
+# binary for a mail-delivery host that only POSTs to a central yarad.
+RUN CGO_ENABLED=0 go build \
+        -ldflags "-s -w -X main.version=${VERSION}" \
+        -o /out/yarad-scan ./cmd/yarad-scan
+
 # ---- tests (built into the image build so CI fails on a bad commit) ---------
 FROM build AS test
 RUN go vet ./... \
@@ -63,6 +69,7 @@ RUN go vet ./... \
 #  --output type=local,dest=dist .` drops just the yarad binary per arch.
 FROM scratch AS bin
 COPY --from=build /out/yarad /yarad
+COPY --from=build /out/yarad-scan /yarad-scan
 
 # ---- rules ------------------------------------------------------------------
 # FROM the yara stage so we have `yarac` (the libyara compiler) from the exact
