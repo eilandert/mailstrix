@@ -2,12 +2,19 @@ package yarad
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// scanT calls Scan with the body's digest (PERF-3 threaded the hash); test
+// helper so a body that is a function call isn't evaluated twice.
+func scanT(s *Scanner, buf []byte, meta ScanMeta) ([]Match, error) {
+	return s.Scan(buf, sha256.Sum256(buf), meta)
+}
 
 // eicar reconstructs the standard EICAR antivirus test string from fragments so
 // the test binary itself is not flagged by an on-access scanner in the repo or
@@ -59,7 +66,7 @@ func TestScannerCompileAndCount(t *testing.T) {
 
 func TestScannerMatch(t *testing.T) {
 	s := newScanner(t, writeRules(t, eicarRule))
-	m, err := s.Scan(eicar(), ScanMeta{})
+	m, err := scanT(s, eicar(), ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +97,7 @@ func TestScannerRuleDenylist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScanner: %v", err)
 	}
-	m, err := s.Scan(eicar(), ScanMeta{})
+	m, err := scanT(s, eicar(), ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +118,7 @@ func TestScannerRuleAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScanner: %v", err)
 	}
-	m, err := s.Scan(eicar(), ScanMeta{})
+	m, err := scanT(s, eicar(), ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +141,7 @@ func TestScannerDenyWinsOverAllow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScanner: %v", err)
 	}
-	m, err := s.Scan(eicar(), ScanMeta{})
+	m, err := scanT(s, eicar(), ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +165,7 @@ func TestExtractStreamMatchesMetric(t *testing.T) {
 	if s.ExtractMetrics().StreamMatches != 0 {
 		t.Fatalf("precondition: StreamMatches should start at 0")
 	}
-	m, err := s.Scan(doc, ScanMeta{})
+	m, err := scanT(s, doc, ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +179,7 @@ func TestExtractStreamMatchesMetric(t *testing.T) {
 
 func TestScannerNoMatch(t *testing.T) {
 	s := newScanner(t, writeRules(t, eicarRule))
-	m, err := s.Scan([]byte("a perfectly innocent email body"), ScanMeta{})
+	m, err := scanT(s, []byte("a perfectly innocent email body"), ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +211,7 @@ func TestScannerSkipsBadFileKeepsGood(t *testing.T) {
 	if s.RuleCount() != 1 {
 		t.Fatalf("rule count = %d, want 1 (good kept, bad skipped)", s.RuleCount())
 	}
-	m, err := s.Scan(eicar(), ScanMeta{})
+	m, err := scanT(s, eicar(), ScanMeta{})
 	if err != nil || len(m) != 1 {
 		t.Errorf("good rule should still match: %+v err=%v", m, err)
 	}
@@ -221,7 +228,7 @@ func TestScannerBrokenRuleKeepsOld(t *testing.T) {
 	if err := s.Reload(); err == nil {
 		t.Error("broken reload should error")
 	}
-	m, err := s.Scan(eicar(), ScanMeta{})
+	m, err := scanT(s, eicar(), ScanMeta{})
 	if err != nil || len(m) != 1 {
 		t.Errorf("old ruleset should still match after failed reload: %+v err=%v", m, err)
 	}
@@ -260,7 +267,7 @@ func TestScanMatchesMacroViaDecompressedStream(t *testing.T) {
 		t.Fatal("fixture changed: marker present in raw bytes, test no longer proves the extract path")
 	}
 	s := newScanner(t, writeRules(t, vbaRule))
-	m, err := s.Scan(doc, ScanMeta{})
+	m, err := scanT(s, doc, ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +279,7 @@ func TestScanMatchesMacroViaDecompressedStream(t *testing.T) {
 // The extract counters must move for a macro doc and stay put for a non-doc.
 func TestScanExtractMetrics(t *testing.T) {
 	s := newScanner(t, writeRules(t, vbaRule))
-	if _, err := s.Scan(macroDoc(t), ScanMeta{}); err != nil {
+	if _, err := scanT(s, macroDoc(t), ScanMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	em := s.ExtractMetrics()
@@ -282,7 +289,7 @@ func TestScanExtractMetrics(t *testing.T) {
 	if em.Failed != 0 || em.Panicked != 0 || em.Encrypted != 0 {
 		t.Errorf("macro doc set fail/panic/enc: %+v", em)
 	}
-	if _, err := s.Scan([]byte("a plain non-document body"), ScanMeta{}); err != nil {
+	if _, err := scanT(s, []byte("a plain non-document body"), ScanMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.ExtractMetrics().Docs; got != 1 {
@@ -296,7 +303,7 @@ func TestScanMalformedOLECountedButFailsOpen(t *testing.T) {
 	s := newScanner(t, writeRules(t, eicarRule))
 	poison := append(append([]byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}, eicar()...),
 		bytes.Repeat([]byte{0x7F}, 2048)...)
-	m, err := s.Scan(poison, ScanMeta{})
+	m, err := scanT(s, poison, ScanMeta{})
 	if err != nil {
 		t.Fatalf("malformed OLE must not error the scan: %v", err)
 	}
@@ -331,13 +338,13 @@ func TestScanOneVBAExternalVariable(t *testing.T) {
 func TestScanFilenameExternalVariable(t *testing.T) {
 	s := newScanner(t, writeRules(t, `rule Bad_Ext { condition: filename matches /\.exe$/ }`))
 	clean := []byte("a perfectly innocent email body")
-	if m, err := s.Scan(clean, ScanMeta{}); err != nil || len(m) != 0 {
+	if m, err := scanT(s, clean, ScanMeta{}); err != nil || len(m) != 0 {
 		t.Fatalf("no filename must not match: %+v err=%v", m, err)
 	}
-	if m, err := s.Scan(clean, NewScanMeta("invoice.txt")); err != nil || len(m) != 0 {
+	if m, err := scanT(s, clean, NewScanMeta("invoice.txt")); err != nil || len(m) != 0 {
 		t.Fatalf("non-.exe filename must not match: %+v err=%v", m, err)
 	}
-	if m, err := s.Scan(clean, NewScanMeta("invoice.exe")); err != nil || len(m) != 1 || m[0].Rule != "Bad_Ext" {
+	if m, err := scanT(s, clean, NewScanMeta("invoice.exe")); err != nil || len(m) != 1 || m[0].Rule != "Bad_Ext" {
 		t.Fatalf(".exe filename must match: %+v err=%v", m, err)
 	}
 }
@@ -347,10 +354,10 @@ func TestScanFilenameExternalVariable(t *testing.T) {
 func TestScanExtensionExternalVariable(t *testing.T) {
 	s := newScanner(t, writeRules(t, `rule Bad_Scr { condition: extension == ".scr" }`))
 	clean := []byte("a perfectly innocent email body")
-	if m, err := s.Scan(clean, NewScanMeta("greeting.GIF")); err != nil || len(m) != 0 {
+	if m, err := scanT(s, clean, NewScanMeta("greeting.GIF")); err != nil || len(m) != 0 {
 		t.Fatalf(".gif must not match .scr rule: %+v err=%v", m, err)
 	}
-	if m, err := s.Scan(clean, NewScanMeta("greeting.SCR")); err != nil || len(m) != 1 {
+	if m, err := scanT(s, clean, NewScanMeta("greeting.SCR")); err != nil || len(m) != 1 {
 		t.Fatalf("uppercase .SCR must normalize to .scr and match: %+v err=%v", m, err)
 	}
 }
@@ -360,10 +367,10 @@ func TestScanExtensionExternalVariable(t *testing.T) {
 func TestScanFileTypeExternalVariable(t *testing.T) {
 	s := newScanner(t, writeRules(t, `rule Outlook_Type { condition: file_type contains "outlook" }`))
 	clean := []byte("a perfectly innocent email body")
-	if m, err := s.Scan(clean, NewScanMeta("invoice.txt")); err != nil || len(m) != 0 {
+	if m, err := scanT(s, clean, NewScanMeta("invoice.txt")); err != nil || len(m) != 0 {
 		t.Fatalf(".txt must not set outlook file_type: %+v err=%v", m, err)
 	}
-	if m, err := s.Scan(clean, NewScanMeta("message.MSG")); err != nil || len(m) != 1 {
+	if m, err := scanT(s, clean, NewScanMeta("message.MSG")); err != nil || len(m) != 1 {
 		t.Fatalf(".MSG must set file_type=outlook and match: %+v err=%v", m, err)
 	}
 }
@@ -537,7 +544,7 @@ func TestStreamDeduplication(t *testing.T) {
 	if s.ExtractMetrics().Deduped != 0 {
 		t.Fatal("precondition: Deduped should start at 0")
 	}
-	if _, err := s.Scan(buf, ScanMeta{}); err != nil {
+	if _, err := scanT(s, buf, ScanMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	em := s.ExtractMetrics()

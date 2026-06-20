@@ -28,7 +28,7 @@ import (
 // production implementation; tests inject a fake to exercise the HTTP layer
 // without libyara.
 type ScanEngine interface {
-	Scan(buf []byte, meta ScanMeta) ([]Match, error)
+	Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, error)
 	RuleCount() int64
 	// Fingerprint identifies the active rule set; it is mixed into the cache key
 	// so a reload that changes the rules invalidates old verdicts (L1 and Redis).
@@ -405,8 +405,12 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	// because the verdict now DEPENDS on it: the same bytes with filename
 	// "invoice.exe" vs "invoice.pdf" can match different rules, so they must not
 	// share a cached verdict.
-	key := s.engine.Fingerprint() + ":" + meta.cacheKey() + ":" + sha256key(buf)
-	matches, cacheStatus := s.lookupOrScan(ctx, key, buf, meta)
+	// Hash the body ONCE: the same SHA256 keys the verdict cache, seeds the
+	// extracted-stream dedup set, and is the MalwareBazaar lookup key. Threading
+	// the digest avoids re-hashing the (up to 8 MiB) body two more times per scan.
+	digest := sha256.Sum256(buf)
+	key := s.engine.Fingerprint() + ":" + meta.cacheKey() + ":" + string(digest[:])
+	matches, cacheStatus := s.lookupOrScan(ctx, key, buf, digest, meta)
 
 	if len(matches) > 0 {
 		s.metrics.matches.Add(1)
@@ -436,7 +440,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 // in-flight identical scan, or a fresh scan whose result is cached. At high
 // volume the cache + coalescing collapse a bulk campaign's N identical messages
 // into a single scan. Returns the matches and a cache-status label for logs.
-func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte, meta ScanMeta) ([]Match, string) {
+func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte, digest [32]byte, meta ScanMeta) ([]Match, string) {
 	// Cache lookup (L1 + Redis L2) runs OUTSIDE the scan-CPU gate, so a slow Redis
 	// can't hold a scan slot; the L2 circuit breaker bounds it further.
 	if m, found := s.cache.Get(key); found {
@@ -460,7 +464,7 @@ func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte, meta 
 		}
 		m, scanErr := func() ([]Match, error) {
 			defer func() { <-s.sem }()
-			return s.dispatch(buf, meta)
+			return s.dispatch(buf, digest, meta)
 		}()
 		if scanErr != nil {
 			// Fail open: a scan error is "no match" to the plugin so a scanner
@@ -488,14 +492,14 @@ func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte, meta 
 // deliberate — the caller treats errors as fail-open "no match" but does NOT
 // cache them, so a panicking input is rescanned next time instead of being
 // pinned as a clean verdict for the whole cache TTL.
-func (s *Server) dispatch(buf []byte, meta ScanMeta) (matches []Match, err error) {
+func (s *Server) dispatch(buf []byte, digest [32]byte, meta ScanMeta) (matches []Match, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			s.errf("scan panic: %v", rec)
 			matches, err = nil, fmt.Errorf("scan panic: %v", rec)
 		}
 	}()
-	return s.engine.Scan(buf, meta)
+	return s.engine.Scan(buf, digest, meta)
 }
 
 // acquireOn takes a slot from sem within BackendTimeout, returning early (false)
@@ -673,10 +677,6 @@ func writeRaw(w http.ResponseWriter, code int, ctype string, body []byte) {
 	_, _ = w.Write(body) // #nosec G705 -- application/json or text/plain API response, not an HTML/XSS sink
 }
 
-func sha256key(b []byte) string {
-	sum := sha256.Sum256(b)
-	return string(sum[:])
-}
 
 // filenameHeader carries the attachment filename from the rspamd plugin. The
 // value is base64 (std, padding optional, whitespace tolerated): the name comes

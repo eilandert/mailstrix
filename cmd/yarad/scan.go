@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -189,7 +190,7 @@ func scanItemFromReader(path string, r io.Reader, scanner *yarad.Scanner, maxBod
 	if err != nil {
 		return scanItem{Path: path, Err: err.Error()}
 	}
-	matches, err := scanner.Scan(buf, yarad.NewScanMeta(name))
+	matches, err := scanner.Scan(buf, sha256.Sum256(buf), yarad.NewScanMeta(name))
 	if err != nil {
 		return scanItem{Path: path, Err: err.Error()}
 	}

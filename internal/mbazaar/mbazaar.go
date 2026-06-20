@@ -314,12 +314,17 @@ func parseSHA256(s string) ([32]byte, bool) {
 // It returns a slice (0 or 1 hit) for symmetry with the URLhaus checker, and is
 // safe for concurrent use.
 func (c *Checker) Check(data []byte) []Hit {
+	return c.CheckDigest(sha256.Sum256(data))
+}
+
+// CheckDigest is Check for a caller that has already computed the SHA256 of the
+// buffer, so the (up to 8 MiB) body is not hashed a second time per scan.
+func (c *Checker) CheckDigest(sum [32]byte) []Hit {
 	c.lookups.Add(1)
 	hs := c.set.Load()
 	if hs == nil || len(hs.m) == 0 {
 		return nil
 	}
-	sum := sha256.Sum256(data)
 	if _, ok := hs.m[sum]; !ok {
 		return nil
 	}

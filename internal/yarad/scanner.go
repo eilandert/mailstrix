@@ -598,7 +598,7 @@ func (v scanVars) define(sc *yara.Scanner) error {
 // scanned and its matches merged in. Extraction is best-effort and fail-open:
 // for a non-document, or on any extract/sub-scan failure, the raw verdict stands
 // and nothing is lost.
-func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
+func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, error) {
 	rules := s.rules.Load()
 	if rules == nil {
 		return nil, fmt.Errorf("no rules loaded")
@@ -687,7 +687,7 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 	// The raw input buffer is seeded into seen first so a stream byte-identical to
 	// the raw bytes is also skipped (it can't add new matches).
 	seen := make(map[[32]byte]struct{})
-	seen[sha256.Sum256(buf)] = struct{}{}
+	seen[digest] = struct{}{} // body already hashed once by the caller (PERF-3)
 	for _, stream := range res.Streams {
 		h := sha256.Sum256(stream)
 		if _, dup := seen[h]; dup {
@@ -736,7 +736,7 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 	// a direct known-bad verdict independent of the YARA rules. Only the raw
 	// buffer is hashed (samples are whole files, not decompressed macros).
 	if s.mbazaar != nil {
-		for _, h := range s.mbazaar.Check(buf) {
+		for _, h := range s.mbazaar.CheckDigest(digest) {
 			out = append(out, Match{Rule: h.Rule(), Tags: []string{"malwarebazaar"}, Meta: map[string]string{"sha256": h.SHA256}})
 		}
 	}

@@ -37,7 +37,7 @@ func BenchmarkScanTiny(b *testing.B) {
 	buf := bytes.Repeat([]byte{0x20}, 64)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := s.Scan(buf, ScanMeta{}); err != nil {
+		if _, err := scanT(s, buf, ScanMeta{}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -49,7 +49,7 @@ func BenchmarkScanEICAR(b *testing.B) {
 	buf := eicar()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := s.Scan(buf, ScanMeta{}); err != nil {
+		if _, err := scanT(s, buf, ScanMeta{}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -64,7 +64,7 @@ func BenchmarkScan8KiB(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := s.Scan(buf, ScanMeta{}); err != nil {
+		if _, err := scanT(s, buf, ScanMeta{}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -79,7 +79,7 @@ func BenchmarkScanOLE2(b *testing.B) {
 	buf := buildBenchCFB()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := s.Scan(buf, ScanMeta{}); err != nil {
+		if _, err := scanT(s, buf, ScanMeta{}); err != nil {
 			b.Fatal(err)
 		}
 	}

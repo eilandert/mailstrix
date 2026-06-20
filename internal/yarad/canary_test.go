@@ -16,7 +16,7 @@ func TestCanaryTagsAllMatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScanner: %v", err)
 	}
-	m, err := s.Scan(eicar(), ScanMeta{})
+	m, err := scanT(s, eicar(), ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestCanaryOffNoTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScanner: %v", err)
 	}
-	m, err := s.Scan(eicar(), ScanMeta{})
+	m, err := scanT(s, eicar(), ScanMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
