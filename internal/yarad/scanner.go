@@ -66,6 +66,7 @@ type Scanner struct {
 	exEncodedScript                                                   atomic.Uint64 // buffers with >=1 decoded MS-Script-Encoder block
 	exDecoded                                                         atomic.Uint64 // buffers with >=1 base64/hex/reversed blob from the static decode pass
 	exStreamMatches                                                   atomic.Uint64 // distinct rule hits that came ONLY from an extracted stream (not raw bytes)
+	exDeduped                                                         atomic.Uint64 // extracted streams skipped as duplicates (content hash matched a prior stream or raw buf)
 
 	// Rule-reload observability (see ReloadMetrics).
 	reloadAttempts, reloadOK, reloadFail atomic.Uint64
@@ -124,6 +125,9 @@ type ExtractMetrics struct {
 	// (macro/MSI/VBE), i.e. rules that did NOT already fire on the raw bytes —
 	// the direct measure of what pre-extraction adds over a raw-only scan.
 	StreamMatches uint64
+	// Deduped counts extracted streams skipped before YARA scanning because their
+	// SHA256 matched a previously scanned stream (or the raw input buffer itself).
+	Deduped uint64
 }
 
 // ExtractMetrics returns the current pre-extraction counters.
@@ -146,6 +150,7 @@ func (s *Scanner) ExtractMetrics() ExtractMetrics {
 		EncScript:     s.exEncodedScript.Load(),
 		Decoded:       s.exDecoded.Load(),
 		StreamMatches: s.exStreamMatches.Load(),
+		Deduped:       s.exDeduped.Load(),
 	}
 }
 
@@ -648,7 +653,20 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 	// Enrich with the decompressed macro source. A sub-scan error must NOT
 	// discard the matches already found on the raw bytes, so it is logged and
 	// skipped rather than failing the whole scan.
+	// Deduplicate extracted streams by content hash before scanning: identical
+	// embedded objects (e.g. the same macro module repeated across a complex doc)
+	// would otherwise each spend a full libyara scan budget for no added signal.
+	// The raw input buffer is seeded into seen first so a stream byte-identical to
+	// the raw bytes is also skipped (it can't add new matches).
+	seen := make(map[[32]byte]struct{})
+	seen[sha256.Sum256(buf)] = struct{}{}
 	for _, stream := range res.Streams {
+		h := sha256.Sum256(stream)
+		if _, dup := seen[h]; dup {
+			s.exDeduped.Add(1)
+			continue
+		}
+		seen[h] = struct{}{}
 		budget := s.scanTimeout
 		if !deadline.IsZero() {
 			if budget = time.Until(deadline); budget <= 0 {

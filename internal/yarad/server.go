@@ -593,6 +593,7 @@ func (s *Server) serveMetrics(w http.ResponseWriter) {
 	fm("extract_encoded_script_total", "buffers with >=1 decoded MS-Script-Encoder (VBE/JSE) block", ex.EncScript)
 	fm("extract_decoded_total", "buffers with >=1 base64/hex/reversed blob from the static decode pass", ex.Decoded)
 	fm("extract_stream_matches_total", "rule hits attributable only to an extracted stream (not raw bytes)", ex.StreamMatches)
+	fm("extract_deduped_total", "extracted streams skipped before YARA scan (content-hash duplicate of a prior stream or raw buf)", ex.Deduped)
 
 	// Rule-reload activity — so a SIGHUP that silently fails to compile is visible
 	// to alerting, not just buried in logs.

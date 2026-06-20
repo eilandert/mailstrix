@@ -519,3 +519,29 @@ func sameRules(m []Match, want []string) bool {
 	}
 	return true
 }
+
+// TestStreamDeduplication verifies that identical extracted streams are skipped
+// before YARA scanning and counted in the Deduped metric. The fixture
+// (dup_vba_streams.xlsm) is a zip with two identical vbaProject.bin entries,
+// which the extractor decompresses into 4+4 = 8 streams where streams 4-7 are
+// byte-for-byte copies of streams 0-3. After dedup, only 4 unique streams are
+// scanned and the remaining 4 should be counted in exDeduped.
+func TestStreamDeduplication(t *testing.T) {
+	buf, err := os.ReadFile(filepath.Join("testdata", "dup_vba_streams.xlsm"))
+	if err != nil {
+		t.Fatalf("fixture unavailable: %v", err)
+	}
+	// Use a rule that matches the VBA attribute header present in all streams.
+	rule := `rule VBA_Attr { strings: $a = "Attribute VB_Name" condition: $a }`
+	s := newScanner(t, writeRules(t, rule))
+	if s.ExtractMetrics().Deduped != 0 {
+		t.Fatal("precondition: Deduped should start at 0")
+	}
+	if _, err := s.Scan(buf, ScanMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	em := s.ExtractMetrics()
+	if em.Deduped == 0 {
+		t.Errorf("Deduped = 0 after scanning doc with duplicate streams; want > 0. ExtractMetrics=%+v", em)
+	}
+}
