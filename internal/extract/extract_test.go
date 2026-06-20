@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"www.velocidex.com/golang/oleparse"
 )
 
 // A real OOXML workbook with VBA macros must yield decompressed cleartext that
@@ -111,6 +113,45 @@ func TestExtractOOXMLDeadlineStops(t *testing.T) {
 func TestVersionSet(t *testing.T) {
 	if Version == "" {
 		t.Error("extract.Version is empty")
+	}
+}
+
+// codes() must bound the OLE2-path macro output three ways (ROBUST-BOUNDS), so a
+// crafted vbaProject.bin can't OOM the container through res.Streams: per-module
+// truncation, a stream-count cap, and a total-bytes cap across modules.
+func TestCodesBounded(t *testing.T) {
+	// One oversized module is truncated to maxBytesPerModule, not copied whole.
+	huge := oleparse.VBAModule{Code: string(make([]byte, maxBytesPerModule+4096))}
+	out := codes([]*oleparse.VBAModule{&huge}, nil)
+	if len(out) != 1 {
+		t.Fatalf("want 1 stream, got %d", len(out))
+	}
+	if len(out[0]) != maxBytesPerModule {
+		t.Errorf("module not clamped: got %d, want %d", len(out[0]), maxBytesPerModule)
+	}
+
+	// Thousands of modules can't exceed maxStreams blobs.
+	many := make([]*oleparse.VBAModule, maxStreams+50)
+	for i := range many {
+		many[i] = &oleparse.VBAModule{Code: "x"}
+	}
+	if got := len(codes(many, nil)); got > maxStreams {
+		t.Errorf("stream-count cap breached: got %d, want <= %d", got, maxStreams)
+	}
+
+	// Total bytes across modules can't exceed maxTotalCode. Each 1 MiB module,
+	// enough of them to blow maxTotalCode well before maxStreams (256).
+	big := make([]*oleparse.VBAModule, 64)
+	for i := range big {
+		big[i] = &oleparse.VBAModule{Code: string(make([]byte, 1<<20))}
+	}
+	out = codes(big, nil)
+	total := 0
+	for _, b := range out {
+		total += len(b)
+	}
+	if total > maxTotalCode {
+		t.Errorf("total-bytes cap breached: got %d, want <= %d", total, maxTotalCode)
 	}
 }
 
