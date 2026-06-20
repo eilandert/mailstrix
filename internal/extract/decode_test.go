@@ -213,6 +213,34 @@ func TestFoldChrConcatCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestFoldChrConcatDoubledQuotes verifies that VBA doubled-quote escapes ("") inside
+// string literals in a Chr/concat chain are unescaped to a single " in the output.
+func TestFoldChrConcatDoubledQuotes(t *testing.T) {
+	// Chr(65) & "He said ""hi""" & Chr(66) → AHe said "hi"B (15 chars, above minDecodedLen)
+	buf := []byte(`x = Chr(65) & "He said ""hi""" & Chr(66)`)
+	res := Extract(buf, time.Time{})
+	if res.DecodedStreams == 0 {
+		t.Fatal("DecodedStreams = 0, want >0")
+	}
+	if !streamsContain(res, `AHe said "hi"B`) {
+		t.Fatalf("doubled-quote unescape in Chr concat not found; streams: %v", streamsAsStrings(res))
+	}
+}
+
+// TestFoldReplaceDoubledQuotes verifies that VBA doubled-quote escapes ("") inside
+// string arguments of Replace() are unescaped before evaluating the substitution.
+func TestFoldReplaceDoubledQuotes(t *testing.T) {
+	// Replace("He said ""bye""", "bye", "hi") → He said "hi" (13 chars)
+	buf := []byte(`s = Replace("He said ""bye""", "bye", "hi")`)
+	res := Extract(buf, time.Time{})
+	if res.DecodedStreams == 0 {
+		t.Fatal("DecodedStreams = 0, want >0")
+	}
+	if !streamsContain(res, `He said "hi"`) {
+		t.Fatalf("doubled-quote unescape in Replace not found; streams: %v", streamsAsStrings(res))
+	}
+}
+
 // streamsAsStrings is a test helper that returns all streams as a string slice
 // for readable failure messages.
 func streamsAsStrings(res Result) []string {

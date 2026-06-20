@@ -68,16 +68,18 @@ var (
 	// always byte-aligned for hex.DecodeString).
 	reHex = regexp.MustCompile(fmt.Sprintf(`(?:[0-9A-Fa-f]{2}){%d,}`, minHexRun/2))
 	// VBA Chr(N)/ChrW(N) with optional surrounding concat operators and string literals.
-	reChrConcat = regexp.MustCompile(`(?i)(?:"[^"]*"|Chr[W]?\(\d{1,5}\))(?:\s*[&+]\s*(?:"[^"]*"|Chr[W]?\(\d{1,5}\)))+`)
+	// VBA uses "" to escape a literal " inside a string, so we allow doubled-quote
+	// escapes with (?:[^"]|"")* instead of [^"]*.
+	reChrConcat = regexp.MustCompile(`(?i)(?:"(?:[^"]|"")*"|Chr[W]?\(\d{1,5}\))(?:\s*[&+]\s*(?:"(?:[^"]|"")*"|Chr[W]?\(\d{1,5}\)))+`)
 
 	// VBA Replace("str","old","new") with all literal string arguments.
-	reReplace = regexp.MustCompile(`(?i)Replace\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)`)
+	reReplace = regexp.MustCompile(`(?i)Replace\(\s*"((?:[^"]|"")*)"\s*,\s*"((?:[^"]|"")*)"\s*,\s*"((?:[^"]|"")*)"\s*\)`)
 
 	// VBA Array(N,N,...) Xor K — trivial single-byte XOR decoder.
 	reArrayXor = regexp.MustCompile(`(?i)Array\(([\d,\s]+)\)\s*Xor\s+(\d{1,3})`)
 
 	// Tokens inside a Chr/ChrW concat chain: a string literal or a Chr(N) call.
-	reChrTok = regexp.MustCompile(`(?i)"([^"]*)"|Chr[W]?\((\d{1,5})\)`)
+	reChrTok = regexp.MustCompile(`(?i)"((?:[^"]|"")*)"|Chr[W]?\((\d{1,5})\)`)
 
 	// Lowercased reversed forms of high-signal tokens. The whole-buffer reverse
 	// is skipped unless one is present, so a normal buffer never gets a reversed
@@ -110,7 +112,7 @@ func foldVBAStrings(src []byte, deadline time.Time, emit func([]byte) bool) bool
 		toks := reChrTok.FindAllStringSubmatch(s, -1)
 		for _, tok := range toks {
 			if tok[1] != "" {
-				buf = append(buf, []byte(tok[1])...)
+				buf = append(buf, []byte(strings.ReplaceAll(tok[1], `""`, `"`))...)
 			} else {
 				n, _ := strconv.Atoi(tok[2])
 				if n < 0 || n > 0x10FFFF {
@@ -130,7 +132,10 @@ func foldVBAStrings(src []byte, deadline time.Time, emit func([]byte) bool) bool
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			return false
 		}
-		result := strings.ReplaceAll(string(m[1]), string(m[2]), string(m[3]))
+		subject := strings.ReplaceAll(string(m[1]), `""`, `"`)
+		old := strings.ReplaceAll(string(m[2]), `""`, `"`)
+		new := strings.ReplaceAll(string(m[3]), `""`, `"`)
+		result := strings.ReplaceAll(subject, old, new)
 		if !emit([]byte(result)) {
 			return false
 		}
