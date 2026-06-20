@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds"
 
 // OLE2/CFB compound-document magic (legacy .doc/.xls, the vbaProject.bin
 // embedded in OOXML, AND the encrypted-OOXML wrapper) and the local-file-header
@@ -64,6 +64,12 @@ const (
 	maxBytesPerBin = 8 << 20
 	// maxTotalCode caps total extracted cleartext per document.
 	maxTotalCode = 16 << 20
+	// maxBytesPerModule clamps one decompressed VBA module's cleartext. A crafted
+	// vbaProject.bin can ask oleparse's MS-OVBA DecompressStream to expand a tiny
+	// stream into hundreds of MiB (copy-token bomb); even though ExtractMacros has
+	// already paid that cost, copying the whole blob into res.Streams is the OOM
+	// amplifier yarad controls, so truncate per module before it lands.
+	maxBytesPerModule = 4 << 20
 	// maxZipEntries bounds zip directory entries walked before giving up.
 	maxZipEntries = 4096
 	// maxParseBins caps how many *.bin members we actually OLE-parse, so a zip
@@ -913,15 +919,38 @@ func readZipEntry(f *zip.File) []byte {
 // codes appends the non-empty decompressed source of each VBA module to out.
 // The Code field is already cleartext (oleparse.ExtractMacros runs the MS-OVBA
 // DecompressStream), which is exactly what the keyword rules need to see.
+//
+// Bounds (ROBUST-BOUNDS): the OLE2 path feeds the raw ExtractMacros output here
+// with no module-count or byte budget of its own (unlike fromOOXML, which caps
+// as it goes), so codes itself enforces all three caps: maxStreams (blob count),
+// maxBytesPerModule (one bomb module can't dominate), and maxTotalCode (the sum
+// across modules). A crafted vbaProject.bin with thousands of modules or a
+// decompression bomb therefore cannot OOM the container through res.Streams.
 func codes(mods []*oleparse.VBAModule, out [][]byte) [][]byte {
+	total := 0
+	for _, b := range out {
+		total += len(b)
+	}
 	for _, m := range mods {
 		if m == nil || m.Code == "" {
 			continue
 		}
-		out = append(out, []byte(m.Code))
-		if len(out) >= maxStreams {
+		if len(out) >= maxStreams || total >= maxTotalCode {
 			break
 		}
+		// Truncate the *string* before the []byte copy: m.Code may be hundreds of
+		// MiB (decompression bomb), so converting it whole would itself be the OOM
+		// allocation. Clamp to both the per-module cap and the remaining total
+		// budget so neither maxTotalCode nor the copy can overshoot.
+		n := len(m.Code)
+		if n > maxBytesPerModule {
+			n = maxBytesPerModule
+		}
+		if rem := maxTotalCode - total; n > rem {
+			n = rem
+		}
+		out = append(out, []byte(m.Code[:n]))
+		total += n
 	}
 	return out
 }
