@@ -266,6 +266,7 @@ func fromOLEDocProps(ole *oleparse.OLEFile, res *Result, deadline time.Time) {
 	}
 
 	// Emit marker first.
+	res.HasDocProps = true
 	res.Streams = append(res.Streams, []byte(docPropsMarker))
 	for _, s := range carved {
 		if len(res.Streams) >= maxStreams {
