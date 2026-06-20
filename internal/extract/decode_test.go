@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 )
@@ -141,4 +142,83 @@ func TestDecodeHugeRunTruncated(t *testing.T) {
 	if got := len(res.Streams[len(res.Streams)-1]); got != maxBytesPerDecodedBlob {
 		t.Fatalf("decoded blob len = %d, want capped at %d", got, maxBytesPerDecodedBlob)
 	}
+}
+
+// TestFoldChrConcat verifies that a Chr()/ChrW() concatenation expression is
+// folded to the assembled string.
+func TestFoldChrConcat(t *testing.T) {
+	// "h" & Chr(116) & Chr(116) & "p://" & Chr(101) & "vil.com"
+	// Chr(116)='t', Chr(101)='e' → "http://evil.com"
+	buf := []byte(`dim s : s = "h" & Chr(116) & Chr(116) & "p://" & Chr(101) & "vil.com"`)
+	res := Extract(buf, time.Time{})
+	if res.DecodedStreams == 0 {
+		t.Fatal("DecodedStreams = 0, want >0")
+	}
+	if !streamsContain(res, "http://evil.com") {
+		t.Fatalf("folded Chr concat not found; streams: %v", streamsAsStrings(res))
+	}
+}
+
+// TestFoldChrConcatPlus verifies that + as concat operator is also handled.
+func TestFoldChrConcatPlus(t *testing.T) {
+	// Chr(112)+…+Chr(101) → "powershe" (8 chars, above minDecodedLen)
+	buf := []byte(`x = Chr(112) + Chr(111) + Chr(119) + Chr(101) + Chr(114) + Chr(115) + Chr(104) + Chr(101)`)
+	res := Extract(buf, time.Time{})
+	if res.DecodedStreams == 0 {
+		t.Fatal("DecodedStreams = 0, want >0")
+	}
+	if !streamsContain(res, "powershe") {
+		t.Fatalf("folded Chr+ concat not found; streams: %v", streamsAsStrings(res))
+	}
+}
+
+// TestFoldReplace verifies that a VBA Replace("str","old","new") call with
+// all-literal arguments is evaluated.
+func TestFoldReplace(t *testing.T) {
+	// Replace strips underscores from "p_o_w_e_r_s_h_e_l_l" → "powershell" (10 chars)
+	buf := []byte(`s = Replace("p_o_w_e_r_s_h_e_l_l", "_", "")`)
+	res := Extract(buf, time.Time{})
+	if res.DecodedStreams == 0 {
+		t.Fatal("DecodedStreams = 0, want >0")
+	}
+	if !streamsContain(res, "powershell") {
+		t.Fatalf("folded Replace not found; streams: %v", streamsAsStrings(res))
+	}
+}
+
+// TestFoldArrayXor verifies that Array(N,...) Xor K is decoded byte-by-byte.
+func TestFoldArrayXor(t *testing.T) {
+	// Encode "powershe" (8 bytes) with key=7:
+	// p=112^7=119, o=111^7=104, w=119^7=112, e=101^7=98, r=114^7=117, s=115^7=116, h=104^7=111, e=101^7=98
+	buf := []byte(`Array(119, 104, 112, 98, 117, 116, 111, 98) Xor 7`)
+	res := Extract(buf, time.Time{})
+	if res.DecodedStreams == 0 {
+		t.Fatal("DecodedStreams = 0, want >0")
+	}
+	if !streamsContain(res, "powershe") {
+		t.Fatalf("folded ArrayXor not found; streams: %v", streamsAsStrings(res))
+	}
+}
+
+// TestFoldChrConcatCaseInsensitive verifies (?i) flag handles chrw() lowercase.
+func TestFoldChrConcatCaseInsensitive(t *testing.T) {
+	// "htt" & chrw(112) & "s://ev" & chrw(105) & "l.com" → "https://evil.com" (16 chars)
+	buf := []byte(`s = "htt" & chrw(112) & "s://ev" & chrw(105) & "l.com"`)
+	res := Extract(buf, time.Time{})
+	if res.DecodedStreams == 0 {
+		t.Fatal("DecodedStreams = 0, want >0")
+	}
+	if !streamsContain(res, "https://evil.com") {
+		t.Fatalf("case-insensitive chrw fold not found; streams: %v", streamsAsStrings(res))
+	}
+}
+
+// streamsAsStrings is a test helper that returns all streams as a string slice
+// for readable failure messages.
+func streamsAsStrings(res Result) []string {
+	out := make([]string, len(res.Streams))
+	for i, s := range res.Streams {
+		out[i] = strings.ToValidUTF8(string(s), "?")
+	}
+	return out
 }

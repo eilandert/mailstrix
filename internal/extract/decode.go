@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -66,6 +67,15 @@ var (
 	// A run of an even number of hex digits (grouped in pairs so the match is
 	// always byte-aligned for hex.DecodeString).
 	reHex = regexp.MustCompile(fmt.Sprintf(`(?:[0-9A-Fa-f]{2}){%d,}`, minHexRun/2))
+	// VBA Chr(N)/ChrW(N) with optional surrounding concat operators and string literals.
+	reChrConcat = regexp.MustCompile(`(?i)(?:"[^"]*"|Chr[W]?\(\d{1,5}\))(?:\s*[&+]\s*(?:"[^"]*"|Chr[W]?\(\d{1,5}\)))+`)
+
+	// VBA Replace("str","old","new") with all literal string arguments.
+	reReplace = regexp.MustCompile(`(?i)Replace\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)`)
+
+	// VBA Array(N,N,...) Xor K — trivial single-byte XOR decoder.
+	reArrayXor = regexp.MustCompile(`(?i)Array\(([\d,\s]+)\)\s*Xor\s+(\d{1,3})`)
+
 	// Lowercased reversed forms of high-signal tokens. The whole-buffer reverse
 	// is skipped unless one is present, so a normal buffer never gets a reversed
 	// twin scanned (StrReverse obfuscation is niche; reversing every body would
@@ -79,6 +89,72 @@ var (
 		[]byte("ptthnwod"),      // downhttp (URLDownload… fragments / hxxp reversed-ish)
 	}
 )
+
+// foldVBAStrings scans src for VBA string-building patterns (Chr/ChrW concat,
+// Replace, and single-byte Xor over Array literals) and emits each reassembled
+// string. Returns false if a global cap was hit.
+func foldVBAStrings(src []byte, deadline time.Time, emit func([]byte) bool) bool {
+	const maxMatches = 64
+
+	// Chr/ChrW concat
+	matches := reChrConcat.FindAll(src, maxMatches)
+	for _, m := range matches {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return false
+		}
+		var buf []byte
+		s := string(m)
+		reTok := regexp.MustCompile(`(?i)"([^"]*)"|Chr[W]?\((\d{1,5})\)`)
+		toks := reTok.FindAllStringSubmatch(s, -1)
+		for _, tok := range toks {
+			if tok[1] != "" {
+				buf = append(buf, []byte(tok[1])...)
+			} else {
+				n, _ := strconv.Atoi(tok[2])
+				buf = append(buf, []byte(string(rune(n)))...)
+			}
+		}
+		if !emit(buf) {
+			return false
+		}
+	}
+
+	// Replace("str","old","new")
+	replMatches := reReplace.FindAllSubmatch(src, maxMatches)
+	for _, m := range replMatches {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return false
+		}
+		result := strings.ReplaceAll(string(m[1]), string(m[2]), string(m[3]))
+		if !emit([]byte(result)) {
+			return false
+		}
+	}
+
+	// Array(N,...) Xor K
+	xorMatches := reArrayXor.FindAllSubmatch(src, maxMatches)
+	for _, m := range xorMatches {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return false
+		}
+		key, _ := strconv.Atoi(strings.TrimSpace(string(m[2])))
+		parts := strings.Split(string(m[1]), ",")
+		var buf []byte
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			n, _ := strconv.Atoi(p)
+			buf = append(buf, byte(n^key))
+		}
+		if !emit(buf) {
+			return false
+		}
+	}
+
+	return true
+}
 
 // fromEncoded runs the single-layer static decoders over buf and a snapshot of
 // the streams extracted so far, appending any decoded blobs to res.Streams and
@@ -128,6 +204,9 @@ func fromEncoded(buf []byte, res *Result, deadline time.Time) {
 			break
 		}
 		if !emitReversed(src, emit) {
+			break
+		}
+		if !foldVBAStrings(src, deadline, emit) {
 			break
 		}
 	}
