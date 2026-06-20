@@ -78,6 +78,14 @@ type Config struct {
 	LogStdout   bool // YARAD_LOG_STDOUT — info/access to stdout; errors stay stderr
 	MetricsAuth bool // YARAD_METRICS_AUTH — require the token for /metrics and /version
 	Pprof       bool // YARAD_PPROF — enable /debug/pprof (off by default, ops-only)
+	Canary      bool // YARAD_CANARY — shadow/observe-only: tag ALL matches yarad_canary=1
+
+	// DenylistFile is an optional path to a file of rule names (one per line,
+	// # comments, case-insensitive) merged with the env-based RuleDenylist.
+	// Re-read on every SIGHUP so rules can be suppressed without a restart.
+	// If the file doesn't exist or is unreadable, a warning is logged and
+	// scanning continues with the env-only denylist (fail-open).
+	DenylistFile string // YARAD_DENYLIST_FILE (default empty = disabled)
 
 	// URLhaus malware-URL lookup. Disabled unless an abuse.ch Auth-Key is set.
 	URLhausKey     string        // YARAD_URLHAUS_KEY[_FILE] — abuse.ch Auth-Key
@@ -135,6 +143,8 @@ func LoadConfig() *Config {
 		LogStdout:      envBool("YARAD_LOG_STDOUT"),
 		MetricsAuth:    envBool("YARAD_METRICS_AUTH"),
 		Pprof:          envBool("YARAD_PPROF"),
+		Canary:         envBool("YARAD_CANARY"),
+		DenylistFile:   envStr("YARAD_DENYLIST_FILE", ""),
 		URLhausKey:     envOrFile("YARAD_URLHAUS_KEY"),
 		URLhausRefresh: envDur("YARAD_URLHAUS_REFRESH", 21600),
 		URLhausMaxURLs: envInt("YARAD_URLHAUS_MAX_URLS", 64),

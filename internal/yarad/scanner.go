@@ -1,6 +1,7 @@
 package yarad
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -87,10 +88,21 @@ type Scanner struct {
 	// Optional abuse.ch MalwareBazaar attachment-hash lookup (nil when no key).
 	mbazaar *mbazaar.Checker
 
+	// canary, when true, tags every surviving match with yarad_canary=1 so the
+	// rspamd plugin routes them all to weight-0 (shadow/observe-only mode).
+	canary bool
+
 	// denylist holds rule names (lowercase) whose matches are dropped from every
 	// result — public-ruleset demo/noise rules (e.g. Didier's `http`) that are
-	// pure false positives for mail. nil/empty means no filtering.
-	denylist map[string]struct{}
+	// pure false positives for mail. nil/empty means no filtering. Accessed via
+	// atomic pointer so ReloadDenylist (SIGHUP) can swap it while scans run.
+	denylist atomic.Pointer[map[string]struct{}]
+	// baseDenylist is the immutable env-parsed denylist, preserved so file-based
+	// additions (ReloadDenylist) can merge on top without losing env entries.
+	baseDenylist map[string]struct{}
+	// denylistFile is the path to a file of additional deny rules (one per line).
+	// Empty means no file. Re-read on SIGHUP via ReloadDenylist.
+	denylistFile string
 	// allowlist holds rule names (lowercase) whose matches are KEPT but tagged
 	// `yarad_allow=1` so the plugin scores them log-only (0 weight). Lets an
 	// operator demote a known-FP rule without dropping its visibility or patching
@@ -163,17 +175,20 @@ func (s *Scanner) ExtractMetrics() ExtractMetrics {
 // "everything is clean".
 func NewScanner(cfg *Config, logf func(string, ...any)) (*Scanner, error) {
 	s := &Scanner{
-		scanTimeout: cfg.ScanTimeout,
-		logf:        logf,
-		srcDir:      cfg.RulesDir,
-		srcFile:     cfg.RulesPath,
-		urlhaus:     urlhaus.New(cfg.URLhausKey, cfg.URLhausRefresh, cfg.CacheDir, logf), // nil if no key
-		urlhausMax:  cfg.URLhausMaxURLs,
-		mbazaar:     mbazaar.New(cfg.MBazaarKey, cfg.MBazaarRefresh, cfg.MBazaarFeed, cfg.CacheDir, logf), // nil if no key
-		denylist:    cfg.RuleDenylist,
-		allowlist:   cfg.RuleAllowlist,
-		topMatches:  newMatchCounter(matchCounterCap),
+		scanTimeout:  cfg.ScanTimeout,
+		logf:         logf,
+		srcDir:       cfg.RulesDir,
+		srcFile:      cfg.RulesPath,
+		urlhaus:      urlhaus.New(cfg.URLhausKey, cfg.URLhausRefresh, cfg.CacheDir, logf), // nil if no key
+		urlhausMax:   cfg.URLhausMaxURLs,
+		mbazaar:      mbazaar.New(cfg.MBazaarKey, cfg.MBazaarRefresh, cfg.MBazaarFeed, cfg.CacheDir, logf), // nil if no key
+		canary:       cfg.Canary,
+		baseDenylist: cfg.RuleDenylist,
+		denylistFile: cfg.DenylistFile,
+		allowlist:    cfg.RuleAllowlist,
+		topMatches:   newMatchCounter(matchCounterCap),
 	}
+	s.denylist.Store(&cfg.RuleDenylist)
 	if s.urlhaus != nil {
 		logf("URLhaus malware-URL lookup enabled (refresh=%s, max_urls/msg=%d)", cfg.URLhausRefresh, cfg.URLhausMaxURLs)
 	}
@@ -183,6 +198,7 @@ func NewScanner(cfg *Config, logf func(string, ...any)) (*Scanner, error) {
 	if err := s.Reload(); err != nil {
 		return nil, err
 	}
+	s.ReloadDenylist()
 	return s, nil
 }
 
@@ -747,7 +763,8 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 // them log-only without losing their visibility in the history. Order is
 // preserved; a no-op when both lists are empty. Deny wins if a name is in both.
 func (s *Scanner) filterDenied(in []Match) []Match {
-	if len(s.denylist) == 0 && len(s.allowlist) == 0 {
+	deny := s.denylist.Load()
+	if (deny == nil || len(*deny) == 0) && len(s.allowlist) == 0 && !s.canary {
 		return in
 	}
 	if len(in) == 0 {
@@ -756,8 +773,10 @@ func (s *Scanner) filterDenied(in []Match) []Match {
 	out := in[:0]
 	for _, m := range in {
 		name := strings.ToLower(m.Rule)
-		if _, denied := s.denylist[name]; denied {
-			continue
+		if deny != nil {
+			if _, denied := (*deny)[name]; denied {
+				continue
+			}
 		}
 		if _, allow := s.allowlist[name]; allow {
 			if m.Meta == nil {
@@ -767,7 +786,53 @@ func (s *Scanner) filterDenied(in []Match) []Match {
 		}
 		out = append(out, m)
 	}
+	if s.canary {
+		for i := range out {
+			if out[i].Meta == nil {
+				out[i].Meta = map[string]string{}
+			}
+			out[i].Meta["yarad_canary"] = "1"
+		}
+	}
 	return out
+}
+
+// ReloadDenylist re-reads the denylist file (if configured) and merges its
+// entries with the immutable env-based denylist. Safe to call from the SIGHUP
+// handler. If the file doesn't exist or is unreadable, a warning is logged and
+// the scanner continues with only the env-based entries (fail-open).
+func (s *Scanner) ReloadDenylist() {
+	if s.denylistFile == "" {
+		return
+	}
+	merged := make(map[string]struct{}, len(s.baseDenylist))
+	for k, v := range s.baseDenylist {
+		merged[k] = v
+	}
+	f, err := os.Open(s.denylistFile) // #nosec G304 -- operator-provided path (env), not attacker input
+	if err != nil {
+		s.logf("WARNING: cannot read denylist file %s: %v (using env-only denylist)", s.denylistFile, err)
+		return
+	}
+	defer f.Close()
+	added := 0
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name := strings.ToLower(line)
+		if _, exists := merged[name]; !exists {
+			merged[name] = struct{}{}
+			added++
+		}
+	}
+	if err := sc.Err(); err != nil {
+		s.logf("WARNING: error reading denylist file %s: %v (partial load)", s.denylistFile, err)
+	}
+	s.denylist.Store(&merged)
+	s.logf("denylist reloaded: %d from env + %d from file = %d total", len(s.baseDenylist), added, len(merged))
 }
 
 // URLhausMetrics reports the URLhaus checker's state for /metrics, or a disabled

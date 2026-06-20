@@ -187,6 +187,9 @@ func cmdServe(args []string) int {
 		log.Printf("[yarad] FATAL: cannot load rules: %v", err)
 		return 1
 	}
+	if cfg.Canary {
+		logf("CANARY MODE: all matches tagged yarad_canary=1 (shadow/observe-only)")
+	}
 
 	srv := yarad.NewServer(cfg, scanner)
 
@@ -203,6 +206,7 @@ func cmdServe(args []string) int {
 				logf("reload failed: %v", err)
 				continue
 			}
+			scanner.ReloadDenylist()
 			srv.FlushCache()
 		}
 	}()
