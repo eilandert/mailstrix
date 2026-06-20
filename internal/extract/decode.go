@@ -89,6 +89,15 @@ var (
 	// gated on reversedMarkers below.
 	reStrReverse = regexp.MustCompile(`(?i)StrReverse\(\s*"((?:[^"]|"")*)"\s*\)`)
 
+	// VBA Environ("NAME") / Environ$("NAME") — an environment-variable lookup.
+	// olevba folds this to "%NAME%" (olevba.py:1088); we emit a prefixed
+	// "VBA-ENVIRON %NAME%" marker (the prefix clears the minDecodedLen floor a
+	// bare "%TEMP%" would miss and gives rules a fixed token), so a rule can flag
+	// env-var probing (Environ("APPDATA"), Environ("TEMP"), …) a dropper uses to
+	// build a path. Only a quoted-literal name is folded; the numeric-index form
+	// Environ(1) returns a value we can't know statically.
+	reEnviron = regexp.MustCompile(`(?i)Environ\$?\(\s*"((?:[^"]|"")*)"\s*\)`)
+
 	// Tokens inside a Chr/ChrW concat chain: a string literal or a Chr(N) call.
 	reChrTok = regexp.MustCompile(`(?i)"((?:[^"]|"")*)"|Chr[W]?\((\d{1,5})\)`)
 
@@ -194,6 +203,24 @@ func foldVBAStrings(src []byte, deadline time.Time, emit func([]byte) bool) bool
 		}
 		lit := strings.ReplaceAll(string(m[1]), `""`, `"`)
 		if !emit([]byte(reverseString(lit))) {
+			return false
+		}
+	}
+
+	// Environ("NAME") — emit "%NAME%" so a rule can flag env-var probing.
+	envMatches := reEnviron.FindAllSubmatch(src, maxMatches)
+	for _, m := range envMatches {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return false
+		}
+		name := strings.ReplaceAll(string(m[1]), `""`, `"`)
+		if name == "" {
+			continue
+		}
+		// Prefix a stable marker: a bare "%TEMP%" is shorter than minDecodedLen
+		// and would be dropped, and the marker gives rules a fixed token to key
+		// on (env-var probing) regardless of the variable name.
+		if !emit([]byte("VBA-ENVIRON %" + name + "%")) {
 			return false
 		}
 	}

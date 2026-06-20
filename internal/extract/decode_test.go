@@ -314,3 +314,23 @@ func TestFoldVBAStringsInputClamp(t *testing.T) {
 		t.Fatalf("pattern past the clamp boundary was folded: %d emits", emitted)
 	}
 }
+
+// TestFoldEnviron verifies Environ("NAME") folds to a VBA-ENVIRON %NAME% marker
+// so a rule can flag env-var probing (olevba parity, PT-VBADEOBF-2).
+func TestFoldEnviron(t *testing.T) {
+	buf := []byte(`p = Environ("APPDATA") & "\dropper.exe"`)
+	res := Extract(buf, time.Time{})
+	if !streamsContain(res, "VBA-ENVIRON %APPDATA%") {
+		t.Fatalf("folded Environ marker not found; streams: %v", streamsAsStrings(res))
+	}
+}
+
+// TestFoldEnvironShortName verifies a short var name still emits (the marker
+// prefix clears the minDecodedLen floor that a bare %TEMP% would miss).
+func TestFoldEnvironShortName(t *testing.T) {
+	buf := []byte(`x = Environ$("TEMP")`)
+	res := Extract(buf, time.Time{})
+	if !streamsContain(res, "VBA-ENVIRON %TEMP%") {
+		t.Fatalf("short Environ name not emitted; streams: %v", streamsAsStrings(res))
+	}
+}
