@@ -468,7 +468,7 @@ jobs:
       - name: actionlint (workflow syntax + embedded shell)
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
       - name: shellcheck (rule fetch/compile/generate scripts)
-        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 docker/fetch-rules.sh docker/compile-rules.sh docker/generate-rules.sh
+        run: docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.10.0 docker/fetch-rules.sh docker/compile-rules.sh docker/generate-rules.sh docker/pprof-capture.sh
       - name: hadolint (Dockerfile; .hadolint.yaml ignores)
         run: docker run --rm -v "$PWD:/repo" -w /repo hadolint/hadolint:v2.12.0 hadolint docker/Dockerfile
       - name: osv-scanner (go.mod/go.sum dependency CVEs)

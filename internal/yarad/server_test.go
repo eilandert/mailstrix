@@ -725,6 +725,33 @@ func TestPprofRequiresAuth(t *testing.T) {
 	}
 }
 
+// TestPprofAuthedTokenAllowed verifies the complement of TestPprofRequiresAuth:
+// with Pprof=true and MetricsAuth=true, a correct token unlocks /debug/pprof/.
+// This is the path ops actually use to capture a live profile (PERF-1), so a
+// regression that 401s a valid token would silently break profiling.
+func TestPprofAuthedTokenAllowed(t *testing.T) {
+	cfg := &Config{Token: "tok", MaxConcurrent: 4, MaxBody: 1 << 20, BackendTimeout: 0, Pprof: true, MetricsAuth: true}
+	cfg.sanitize()
+	s := NewServer(cfg, &fakeEngine{count: 1})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	s.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("pprof with auth + valid token: /debug/pprof/ = %d, want 200", w.Code)
+	}
+
+	// The X-YARAD-Token header must work too (the rspamd plugin's scheme).
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+	req.Header.Set("X-YARAD-Token", "tok")
+	s.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("pprof with auth + X-YARAD-Token: /debug/pprof/ = %d, want 200", w.Code)
+	}
+}
+
 // fakeDegradedCache wraps noopCache and returns a non-empty Degraded() string
 // to exercise the /ready degraded-cache path without a real Redis.
 type fakeDegradedCache struct{ noopCache }

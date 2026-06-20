@@ -159,6 +159,18 @@ Diagnosis checklist:
 go tool pprof http://127.0.0.1:8079/debug/pprof/profile?seconds=30
 ```
 
+   For a full baseline (CPU + heap + allocs + goroutine, with `top` listings
+   for diffing across builds) use the helper, driving `/scan` load during the
+   CPU window:
+
+```sh
+YARAD_TOKEN=secret docker/pprof-capture.sh http://127.0.0.1:8079 30 ./pprof-baseline
+```
+
+   Capture one baseline on the current image before starting any PERF-* change,
+   then re-capture after, and diff: `go tool pprof -http=: -diff_base
+   pprof-baseline/cpu.pb.gz pprof-after/cpu.pb.gz`.
+
 Memory: startup log prints estimated peak request-buffer memory (`max_inflight × max_body`). A warning is emitted if buffers alone exceed half the container `mem_limit`. Check `yarad_extract_panicked_total` — parser panics may indicate a memory-exhausting input (zip bomb, malformed container). If `panicked_total` is rising, consider lowering `YARAD_MAX_BODY` or `YARAD_MAX_INFLIGHT`.
 
 ### Token rotation (zero-downtime)
