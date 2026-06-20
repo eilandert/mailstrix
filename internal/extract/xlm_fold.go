@@ -39,6 +39,12 @@ const (
 	maxXLMFoldSheets = 64
 	// minXLMFoldResult is the minimum folded-string length to emit (avoids noise).
 	minXLMFoldResult = 8
+	// maxXLMFoldDepth bounds the foldXLMFormula↔foldFunctionCall mutual
+	// recursion. A hostile formula nested deeper than the Go stack (e.g.
+	// =EXEC(EXEC(EXEC(…)))) would otherwise overflow the stack — a fatal,
+	// unrecoverable crash that recover() cannot trap. At the cap we stop
+	// recursing and fold the remaining text flat, emitting a partial result.
+	maxXLMFoldDepth = 16
 )
 
 // xlmDangerousFuncs are XLM function names whose presence in a folded result
@@ -186,6 +192,15 @@ func emitDangerousMarkers(folded string, out *[][]byte) {
 // successfully folded portions are concatenated. The goal is to reassemble
 // obfuscated strings like =CHAR(104)&CHAR(116)&"tp://evil.com" → "http://evil.com".
 func foldXLMFormula(formula string) string {
+	return foldXLMFormulaDepth(formula, 0)
+}
+
+// foldXLMFormulaDepth is foldXLMFormula with an explicit recursion depth.
+// foldPart→foldFunctionCall recurse back here with depth+1; at maxXLMFoldDepth
+// we stop descending into function arguments and fold the parts flat so a
+// pathologically nested formula cannot overflow the stack (a fatal crash that
+// recover() cannot trap).
+func foldXLMFormulaDepth(formula string, depth int) string {
 	if len(formula) == 0 {
 		return ""
 	}
@@ -208,7 +223,7 @@ func foldXLMFormula(formula string) string {
 			continue
 		}
 
-		if folded, ok := foldPart(part); ok {
+		if folded, ok := foldPart(part, depth); ok {
 			buf.WriteString(folded)
 		}
 		// If we can't fold a part, skip it — emit what we can.
@@ -263,8 +278,9 @@ func splitOnConcat(s string) []string {
 }
 
 // foldPart tries to fold a single formula part (between & operators).
-// Returns the folded string and true if successful.
-func foldPart(part string) (string, bool) {
+// Returns the folded string and true if successful. depth is the current
+// recursion depth, propagated to foldFunctionCall to bound nesting.
+func foldPart(part string, depth int) (string, bool) {
 	trimmed := strings.TrimSpace(part)
 	upper := strings.ToUpper(trimmed)
 
@@ -295,7 +311,7 @@ func foldPart(part string) (string, bool) {
 	if idx := strings.IndexByte(upper, '('); idx > 0 {
 		fname := strings.TrimSpace(upper[:idx])
 		if isXLMFunctionName(fname) {
-			return foldFunctionCall(trimmed), true
+			return foldFunctionCall(trimmed, depth), true
 		}
 	}
 
@@ -303,7 +319,10 @@ func foldPart(part string) (string, bool) {
 }
 
 // foldFunctionCall preserves a function wrapper and folds its arguments.
-func foldFunctionCall(call string) string {
+// depth bounds the mutual recursion with foldXLMFormulaDepth: at the cap we
+// keep the arguments verbatim instead of recursing, so dangerous-func markers
+// still fire on the wrapper but the stack can't overflow.
+func foldFunctionCall(call string, depth int) string {
 	idx := strings.IndexByte(call, '(')
 	if idx < 0 {
 		return call
@@ -315,7 +334,11 @@ func foldFunctionCall(call string) string {
 		return call
 	}
 	args := rest[:closeIdx]
-	folded := foldXLMFormula(args)
+	if depth >= maxXLMFoldDepth {
+		// Recursion cap reached: emit the wrapper with un-folded args.
+		return "=" + fname + "(" + args + ")"
+	}
+	folded := foldXLMFormulaDepth(args, depth+1)
 	if folded == "" {
 		folded = args
 	}

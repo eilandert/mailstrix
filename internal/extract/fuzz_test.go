@@ -107,3 +107,34 @@ func FuzzExtract(f *testing.F) {
 		}
 	})
 }
+
+// FuzzFoldXLMFormula drives the XLM constant-folder with arbitrary formula
+// text. foldXLMFormula↔foldFunctionCall are mutually recursive over attacker-
+// controlled nesting, so the invariant is: never overflow the stack, always
+// terminate, never return more than the input could justify. The harness seeds
+// deep =EXEC(EXEC(…)) and CHAR()&… concatenation chains. (STAB-1)
+func FuzzFoldXLMFormula(f *testing.F) {
+	f.Add("=CHAR(104)&CHAR(116)&\"tp://evil.com\"")
+	f.Add("=EXEC(CHAR(99)&\"md /c calc\")")
+	f.Add(func() string {
+		s := "CHAR(65)"
+		for i := 0; i < maxXLMFoldDepth*8; i++ {
+			s = "EXEC(" + s + ")"
+		}
+		return "=" + s
+	}())
+	f.Add("")
+	f.Add("plain text no formula")
+
+	f.Fuzz(func(t *testing.T, formula string) {
+		// Bound the input the way the real caller does (maxXLMFoldFormulaLen)
+		// so the fuzzer explores formula structure, not raw size.
+		if len(formula) > maxXLMFoldFormulaLen {
+			formula = formula[:maxXLMFoldFormulaLen]
+		}
+		out := foldXLMFormula(formula) // must not panic / overflow / hang
+		if len(out) > 4*maxXLMFoldFormulaLen {
+			t.Fatalf("folded output %d >> input %d", len(out), len(formula))
+		}
+	})
+}

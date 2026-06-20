@@ -363,3 +363,45 @@ func TestFromOOXMLXLMFold_ValueElement(t *testing.T) {
 		t.Errorf("value element not captured; got %q", joined)
 	}
 }
+
+// TestFoldXLMFormulaDeepNestingTerminates guards the foldXLMFormula↔
+// foldFunctionCall mutual recursion (STAB-1): a pathologically nested XLM
+// formula must terminate without overflowing the stack (a fatal, unrecoverable
+// crash). At maxXLMFoldDepth the inner args are kept verbatim and a partial
+// result is returned.
+func TestFoldXLMFormulaDeepNestingTerminates(t *testing.T) {
+	// Build =EXEC(EXEC(EXEC(…CHAR(65)…))) far deeper than maxXLMFoldDepth.
+	const nest = maxXLMFoldDepth * 8
+	formula := "CHAR(65)"
+	for i := 0; i < nest; i++ {
+		formula = "EXEC(" + formula + ")"
+	}
+	formula = "=" + formula
+
+	done := make(chan string, 1)
+	go func() { done <- foldXLMFormula(formula) }()
+
+	select {
+	case got := <-done:
+		// Must still recognise the outermost dangerous function.
+		if !strings.Contains(strings.ToUpper(got), "EXEC(") {
+			t.Errorf("folded result lost EXEC wrapper: %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("foldXLMFormula did not terminate on deeply nested input")
+	}
+}
+
+// TestFoldFunctionCallDepthCap verifies the cap keeps args verbatim instead of
+// recursing once maxXLMFoldDepth is reached.
+func TestFoldFunctionCallDepthCap(t *testing.T) {
+	got := foldFunctionCall("EXEC(CHAR(65))", maxXLMFoldDepth)
+	if got != "=EXEC(CHAR(65))" {
+		t.Errorf("at depth cap want verbatim args, got %q", got)
+	}
+	// Below the cap it folds CHAR(65) -> A.
+	got = foldFunctionCall("EXEC(CHAR(65))", 0)
+	if got != "=EXEC(A)" {
+		t.Errorf("below cap want folded args, got %q", got)
+	}
+}
