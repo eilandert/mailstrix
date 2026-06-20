@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5  # zizmor: ignore[artipacked]
       - uses: ./.github/actions/go-setup
       - name: fuzz (untrusted /scan body)
         run: go test -run=x -fuzz='^FuzzScanBody$' -fuzztime=5m ./internal/yarad/
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5  # zizmor: ignore[artipacked]
       - uses: ./.github/actions/go-setup
         with:
           packages: clang
@@ -51,7 +51,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5  # zizmor: ignore[artipacked]
       - uses: github/codeql-action/init@v3
         with:
           languages: go
