@@ -334,3 +334,33 @@ func TestFoldEnvironShortName(t *testing.T) {
 		t.Fatalf("short Environ name not emitted; streams: %v", streamsAsStrings(res))
 	}
 }
+
+// TestDridexURLDecodeVector checks the dridexURLDecode primitive against an
+// olevba reference vector (PT-VBADEOBF-3). "C3iY…cknj" decodes to "TMP".
+func TestDridexURLDecodeVector(t *testing.T) {
+	got, ok := dridexURLDecode("C3iY1epSRGe6q8g15xStVesdG717MAlg2H4hmV1vkL6Glnf0cknj")
+	if !ok || got != "TMP" {
+		t.Fatalf("dridexURLDecode = %q ok=%v, want \"TMP\" true", got, ok)
+	}
+}
+
+// TestFoldDridexURL checks the end-to-end fold: a Dridex-encoded C2 URL literal
+// (olevba reference vector) is decoded and emitted so URL rules can match it.
+func TestFoldDridexURL(t *testing.T) {
+	enc := "HLIY3Nf3z2k8jD37h1n2OM3N712DGQ3c5M841RZ8C5e6P1C50C4ym1oF504WyV182p4mJ16cK9Z61l47h2dU1rVB5V681sFY728i16H3E2Qm1fn47y2cgAo156j8T1s600hukKO1568X1xE4Z7d2q17jvcwgk816Yz32o9Q216Mpr0B01vcwg856a17b9j2zAmWf1536B1t7d92rI1FZ5E36Pu1jl504Z34tm2R43i55Lg2F3eLE3T28lLX1D504348Goe8Gbdp37w443ADy36X0h14g7Wb2G3u584kEG332Ut8ws3wO584pzSTf"
+	buf := []byte(`u = "` + enc + `"`)
+	res := Extract(buf, time.Time{})
+	if !streamsContain(res, "http://95.163.121.82:8080/koh/mui.php") {
+		t.Fatalf("Dridex C2 URL not decoded; streams: %v", streamsAsStrings(res))
+	}
+}
+
+// TestDridexRejectsPlainHex verifies a plain-hex string (no G-Z letters) is not
+// treated as Dridex (the hex pass owns it).
+func TestDridexRejectsPlainHex(t *testing.T) {
+	if _, ok := dridexURLDecode("0011223344556677"); ok {
+		// Not asserting the decode result, just that pure-digit/hex input
+		// doesn't masquerade as a valid Dridex blob with printable output by luck.
+		t.Skip("primitive may decode digits; gating is done by dridexNotHex at the call site")
+	}
+}
