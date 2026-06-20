@@ -94,6 +94,9 @@ type Scanner struct {
 	// operator demote a known-FP rule without dropping its visibility or patching
 	// the source. nil/empty means no tagging. Denylist wins if a name is in both.
 	allowlist map[string]struct{}
+
+	// topMatches counts rule hits since the last reload for /version observability.
+	topMatches *matchCounter
 }
 
 // ExtractMetrics is a snapshot of the document pre-extraction counters, surfaced
@@ -161,6 +164,7 @@ func NewScanner(cfg *Config, logf func(string, ...any)) (*Scanner, error) {
 		mbazaar:     mbazaar.New(cfg.MBazaarKey, cfg.MBazaarRefresh, cfg.MBazaarFeed, cfg.CacheDir, logf), // nil if no key
 		denylist:    cfg.RuleDenylist,
 		allowlist:   cfg.RuleAllowlist,
+		topMatches:  newMatchCounter(matchCounterCap),
 	}
 	if s.urlhaus != nil {
 		logf("URLhaus malware-URL lookup enabled (refresh=%s, max_urls/msg=%d)", cfg.URLhausRefresh, cfg.URLhausMaxURLs)
@@ -259,6 +263,9 @@ func (s *Scanner) Reload() error {
 		src = s.srcFile
 	}
 	s.logf("loaded %d YARA rules from %s (fp=%s)", s.count.Load(), src, fp)
+	// Reset the top-matches counter so counts reflect the current rule set only,
+	// not a mix of old and new rule names that may have been renamed/removed.
+	s.topMatches.Reset()
 	return nil
 }
 
@@ -670,6 +677,14 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 	// synthetic feed matches are added, so MALWAREBAZAAR_*/URLHAUS_* are never
 	// affected by the rule denylist.
 	out = s.filterDenied(out)
+	// Record rule names for the top-matches counter (observability via /version).
+	if len(out) > 0 {
+		names := make([]string, len(out))
+		for i, m := range out {
+			names[i] = m.Rule
+		}
+		s.topMatches.Add(names)
+	}
 	// MalwareBazaar: exact SHA256 match of the whole scanned buffer (the
 	// attachment, as the plugin POSTed it) against known malware samples —
 	// a direct known-bad verdict independent of the YARA rules. Only the raw
@@ -739,6 +754,11 @@ func (s *Scanner) URLhausMetrics() urlhaus.Metrics {
 	}
 	return s.urlhaus.Metrics()
 }
+
+// TopMatches returns the top n most-triggered rule names since the last reload,
+// sorted descending by hit count. Surfaced on /version for operator visibility
+// into which rules fire most (weight tuning, FP triage, coverage confirmation).
+func (s *Scanner) TopMatches(n int) []MatchCount { return s.topMatches.TopN(n) }
 
 // MBazaarMetrics reports the MalwareBazaar checker's state for /metrics, or a
 // disabled snapshot when no Auth-Key is configured.

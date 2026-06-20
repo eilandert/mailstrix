@@ -297,6 +297,7 @@ func (f *fakeEngine) ExtractMetrics() ExtractMetrics  { return ExtractMetrics{} 
 func (f *fakeEngine) ReloadMetrics() ReloadMetrics    { return ReloadMetrics{ModUnix: f.modUnix} }
 func (f *fakeEngine) URLhausMetrics() urlhaus.Metrics { return urlhaus.Metrics{} }
 func (f *fakeEngine) MBazaarMetrics() mbazaar.Metrics { return f.mb }
+func (f *fakeEngine) TopMatches(n int) []MatchCount   { return nil }
 
 func newTestServer(eng ScanEngine, token string) *Server {
 	cfg := &Config{Token: token, MaxConcurrent: 4, MaxBody: 1 << 20, BackendTimeout: 0}

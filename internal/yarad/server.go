@@ -41,6 +41,8 @@ type ScanEngine interface {
 	URLhausMetrics() urlhaus.Metrics
 	// MBazaarMetrics reports the MalwareBazaar checker state for /metrics.
 	MBazaarMetrics() mbazaar.Metrics
+	// TopMatches returns the top n most-triggered rule names since last reload.
+	TopMatches(n int) []MatchCount
 }
 
 // scanResponse is the JSON the rspamd plugin parses. Matches is empty (not
@@ -304,6 +306,9 @@ func (s *Server) serveVersion(w http.ResponseWriter) {
 	}
 	if rl.PrevFingerprint != "" {
 		resp["prev_fingerprint"] = rl.PrevFingerprint
+	}
+	if top := s.engine.TopMatches(20); len(top) > 0 {
+		resp["top_matches"] = top
 	}
 	// Provenance of the loaded compiled bundle, when it came from the cache (set
 	// by fetch-rules / the seeded manifest): which published rule version, when it
