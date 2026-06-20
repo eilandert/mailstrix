@@ -20,6 +20,11 @@ type Cache interface {
 	Get(key string) ([]Match, bool)
 	Put(key string, matches []Match)
 	Flush()
+	// Degraded returns a non-empty human-readable reason when the cache is
+	// operating in a reduced capacity (e.g. the Redis circuit breaker is open).
+	// An empty string means fully operational. Disabled caching (noopCache) is
+	// not degraded — it is an intentional configuration.
+	Degraded() string
 }
 
 // noopCache is used when YARAD_CACHE_TTL=0 (caching disabled): every Get misses.
@@ -28,6 +33,7 @@ type noopCache struct{}
 func (noopCache) Get(string) ([]Match, bool) { return nil, false }
 func (noopCache) Put(string, []Match)        {}
 func (noopCache) Flush()                     {}
+func (noopCache) Degraded() string           { return "" }
 
 // lruCache is the always-on in-process layer: a TTL'd LRU bounded to CacheSize
 // entries. Concurrency is a single mutex — Get/Put are O(1) and hold it only for
@@ -132,6 +138,16 @@ func (c *lruCache) Flush() {
 	c.ll.Init()
 	c.items = make(map[string]*list.Element, c.max)
 	c.mu.Unlock()
+}
+
+// Degraded returns "redis breaker open" when a Redis L2 is configured and its
+// circuit breaker is currently open (Redis is unreachable). An empty string
+// means the cache is fully operational.
+func (l *lruCache) Degraded() string {
+	if l.redis != nil && l.redis.br.isOpen() {
+		return "redis breaker open"
+	}
+	return ""
 }
 
 // removeElement must be called with the lock held.
@@ -248,4 +264,13 @@ func (b *redisBreaker) fail() {
 		b.fails = 0
 	}
 	b.mu.Unlock()
+}
+
+// isOpen reports whether the breaker is currently open (Redis declared
+// unreachable and the cooldown has not yet elapsed). fail() resets fails to 0
+// when it trips and sets openUntil, so we only need to check the deadline.
+func (b *redisBreaker) isOpen() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return time.Now().Before(b.openUntil)
 }

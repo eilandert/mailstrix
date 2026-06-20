@@ -184,3 +184,52 @@ func TestCacheGetReturnsIsolatedSlice(t *testing.T) {
 		t.Errorf("cached entry mutated by caller: %+v", again)
 	}
 }
+
+func TestNoopCacheDegraded(t *testing.T) {
+	var c noopCache
+	if d := c.Degraded(); d != "" {
+		t.Errorf("noopCache.Degraded() = %q, want empty", d)
+	}
+}
+
+func TestLRUCacheDegradedNoRedis(t *testing.T) {
+	c := newLRU(t, time.Minute, 10)
+	if d := c.Degraded(); d != "" {
+		t.Errorf("lruCache without redis.Degraded() = %q, want empty", d)
+	}
+}
+
+func TestBreakerIsOpenAfterTrip(t *testing.T) {
+	var b redisBreaker
+	for i := 0; i < breakerTrip; i++ {
+		b.fail()
+	}
+	if !b.isOpen() {
+		t.Error("breaker should be open after breakerTrip consecutive failures")
+	}
+}
+
+func TestBreakerIsOpenResetsOnOK(t *testing.T) {
+	var b redisBreaker
+	for i := 0; i < breakerTrip; i++ {
+		b.fail()
+	}
+	b.ok()
+	if b.isOpen() {
+		t.Error("ok() must close the breaker (isOpen should be false)")
+	}
+}
+
+func TestBreakerIsOpenAfterCooldown(t *testing.T) {
+	var b redisBreaker
+	for i := 0; i < breakerTrip; i++ {
+		b.fail()
+	}
+	// Simulate cooldown elapsed.
+	b.mu.Lock()
+	b.openUntil = time.Now().Add(-time.Second)
+	b.mu.Unlock()
+	if b.isOpen() {
+		t.Error("breaker should be closed once cooldown has elapsed")
+	}
+}
