@@ -246,6 +246,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeText(w, http.StatusOK, "ready (stale rules)")
 			return
 		}
+		if d := s.cache.Degraded(); d != "" {
+			writeText(w, http.StatusOK, "ready ("+d+")")
+			return
+		}
 		writeText(w, http.StatusOK, "ready")
 	case r.Method == http.MethodGet && r.URL.Path == "/version":
 		if !s.metricsAuthed(r) {

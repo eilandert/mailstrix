@@ -667,3 +667,35 @@ func TestPprofRequiresAuth(t *testing.T) {
 		t.Errorf("pprof with auth: /debug/pprof/ (no token) = %d, want 401", w.Code)
 	}
 }
+
+// fakeDegradedCache wraps noopCache and returns a non-empty Degraded() string
+// to exercise the /ready degraded-cache path without a real Redis.
+type fakeDegradedCache struct{ noopCache }
+
+func (f *fakeDegradedCache) Degraded() string { return "redis breaker open" }
+
+func TestReadyDegradedCache(t *testing.T) {
+	s := newTestServer(&fakeEngine{count: 1}, "tok")
+	s.cache = &fakeDegradedCache{}
+
+	w := get(s, "/ready")
+	if w.Code != http.StatusOK {
+		t.Errorf("/ready with degraded cache: %d want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "redis breaker open") {
+		t.Errorf("/ready body missing degraded reason: %q", w.Body.String())
+	}
+}
+
+func TestReadyNotDegradedWithNoopCache(t *testing.T) {
+	s := newTestServer(&fakeEngine{count: 1}, "tok")
+	s.cache = noopCache{}
+
+	w := get(s, "/ready")
+	if w.Code != http.StatusOK {
+		t.Errorf("/ready with noopCache: %d want 200", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "degraded") {
+		t.Errorf("/ready body should not mention degraded for noopCache: %q", w.Body.String())
+	}
+}
