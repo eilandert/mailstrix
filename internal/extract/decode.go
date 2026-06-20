@@ -101,6 +101,12 @@ var (
 	// Tokens inside a Chr/ChrW concat chain: a string literal or a Chr(N) call.
 	reChrTok = regexp.MustCompile(`(?i)"((?:[^"]|"")*)"|Chr[W]?\((\d{1,5})\)`)
 
+	// Dridex-obfuscated string literal: a quoted run of >=20 alphanumerics
+	// (olevba.py:899 re_dridex_string). dridexNotHex gates out plain hex strings
+	// (a Dridex blob must contain a non-hex letter G-Z/g-z; olevba.py:901).
+	reDridex     = regexp.MustCompile(`"[0-9A-Za-z]{20,}"`)
+	dridexNotHex = regexp.MustCompile(`[G-Zg-z]`)
+
 	// Lowercased reversed forms of high-signal tokens. The whole-buffer reverse
 	// is skipped unless one is present, so a normal buffer never gets a reversed
 	// twin scanned (StrReverse obfuscation is niche; reversing every body would
@@ -207,7 +213,8 @@ func foldVBAStrings(src []byte, deadline time.Time, emit func([]byte) bool) bool
 		}
 	}
 
-	// Environ("NAME") — emit "%NAME%" so a rule can flag env-var probing.
+	// Environ("NAME") — emit a VBA-ENVIRON %NAME% marker so a rule can flag
+	// env-var probing.
 	envMatches := reEnviron.FindAllSubmatch(src, maxMatches)
 	for _, m := range envMatches {
 		if !deadline.IsZero() && time.Now().After(deadline) {
@@ -225,6 +232,24 @@ func foldVBAStrings(src []byte, deadline time.Time, emit func([]byte) bool) bool
 		}
 	}
 
+	// Dridex-obfuscated string literals (olevba pass 4). A quoted >=20-char
+	// alphanumeric run that is NOT plain hex is run through dridexURLDecode.
+	dridexMatches := reDridex.FindAll(src, maxMatches)
+	for _, m := range dridexMatches {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return false
+		}
+		inner := m[1 : len(m)-1] // strip the surrounding quotes
+		if !dridexNotHex.Match(inner) {
+			continue // plain hex — the hex pass already covers it
+		}
+		if dec, ok := dridexURLDecode(string(inner)); ok {
+			if !emit([]byte(dec)) {
+				return false
+			}
+		}
+	}
+
 	return true
 }
 
@@ -236,6 +261,98 @@ func reverseString(s string) string {
 		r[i], r[j] = r[j], r[i]
 	}
 	return string(r)
+}
+
+// stripDigits returns the integer formed by the digit characters of s (other
+// characters dropped). zeros==true substitutes '0' for each non-digit instead
+// of dropping it. Mirrors olevba's StripChars / StripCharsWithZero. Returns ok
+// false when no digits remain or the result overflows an int.
+func stripDigits(s string, zeros bool) (int, bool) {
+	var b strings.Builder
+	any := false
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			b.WriteRune(c)
+			any = true
+		} else if zeros {
+			b.WriteByte('0')
+		}
+	}
+	if !any {
+		return 0, false
+	}
+	n, err := strconv.Atoi(b.String())
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// dridexURLDecode reverses the Dridex string obfuscation found in olevba
+// (DridexUrlDecode). The format embeds two key markers around the midpoint of
+// the (prefix/suffix-stripped) text, then splits the remainder into fixed-width
+// digit groups, each decoded as chr(group/keyEnc2). All division is integer
+// (olevba ran on Python 2). Fail-open: any out-of-range index, zero divisor, or
+// non-printable byte returns ok=false, so a false-positive candidate just
+// yields no blob.
+func dridexURLDecode(in string) (out string, ok bool) {
+	defer func() {
+		if recover() != nil { // never let a slice-bounds panic escape
+			out, ok = "", false
+		}
+	}()
+	if len(in) < 8 {
+		return "", false
+	}
+	work := in[4 : len(in)-4]
+	if len(work) < 4 {
+		return "", false
+	}
+	half := len(work) / 2
+	keyEnc, ok1 := stripDigits(work[half-2:half], true)
+	keySize, ok2 := stripDigits(work[half:half+2], true)
+	if !ok1 || !ok2 {
+		return "", false
+	}
+	nCharSize := keySize - keyEnc
+	// Real Dridex group widths are ~10; cap at 16 to bound hostile input while
+	// allowing genuine samples.
+	if nCharSize <= 0 || nCharSize > 16 {
+		return "", false
+	}
+	work = work[:half-2] + work[half+2:]
+	half = len(work) / 2
+	if half-nCharSize/2 < 0 || half+nCharSize/2 > len(work) {
+		return "", false
+	}
+	keyEnc2, ok3 := stripDigits(work[half-nCharSize/2:half+nCharSize/2], false)
+	if !ok3 || keyEnc2 == 0 {
+		return "", false // division by zero / no key digits
+	}
+	work = work[:half-nCharSize/2] + work[half+nCharSize/2:]
+	if len(work) == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	for i := 0; i < len(work); i += nCharSize {
+		end := i + nCharSize
+		if end > len(work) {
+			end = len(work) // final partial group, like olevba's range slice
+		}
+		g, gok := stripDigits(work[i:end], false)
+		if !gok {
+			return "", false
+		}
+		code := g / keyEnc2
+		if code < 0x20 || code > 0x7E {
+			return "", false // not printable ASCII — almost certainly not Dridex
+		}
+		b.WriteByte(byte(code))
+	}
+	if b.Len() == 0 {
+		return "", false
+	}
+	return b.String(), true
 }
 
 // fromEncoded runs the single-layer static decoders over buf and a snapshot of
