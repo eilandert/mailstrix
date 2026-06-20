@@ -20,6 +20,8 @@ import (
 	"github.com/eilandert/rspamd-yarad/internal/extract"
 	"github.com/eilandert/rspamd-yarad/internal/mbazaar"
 	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
+
+	_ "net/http/pprof" // #nosec G108 -- handlers on DefaultServeMux; only delegated to when cfg.Pprof is set at runtime
 )
 
 // ScanEngine is what the server dispatches a request to. *Scanner is the
@@ -257,6 +259,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveMetrics(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/scan":
 		s.handleScan(w, r)
+	case s.cfg.Pprof && strings.HasPrefix(r.URL.Path, "/debug/pprof"):
+		if !s.metricsAuthed(r) {
+			writeText(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		http.DefaultServeMux.ServeHTTP(w, r)
 	default:
 		writeText(w, http.StatusNotFound, "not found")
 	}

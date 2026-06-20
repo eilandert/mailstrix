@@ -635,3 +635,34 @@ func TestDecodeFilenameB64Variants(t *testing.T) {
 		t.Error("garbage decoded as base64; want !ok")
 	}
 }
+
+// TestPprofDisabledByDefault verifies that /debug/pprof/ returns 404 when
+// YARAD_PPROF is not set (Pprof=false).
+func TestPprofDisabledByDefault(t *testing.T) {
+	s := newTestServer(&fakeEngine{count: 1}, "tok")
+	if w := get(s, "/debug/pprof/"); w.Code != http.StatusNotFound {
+		t.Errorf("pprof disabled: /debug/pprof/ = %d, want 404", w.Code)
+	}
+}
+
+// TestPprofEnabled verifies that /debug/pprof/ returns 200 (the HTML index page)
+// when Pprof=true and no auth is required.
+func TestPprofEnabled(t *testing.T) {
+	cfg := &Config{Token: "tok", MaxConcurrent: 4, MaxBody: 1 << 20, BackendTimeout: 0, Pprof: true}
+	cfg.sanitize()
+	s := NewServer(cfg, &fakeEngine{count: 1})
+	if w := get(s, "/debug/pprof/"); w.Code != http.StatusOK {
+		t.Errorf("pprof enabled: /debug/pprof/ = %d, want 200", w.Code)
+	}
+}
+
+// TestPprofRequiresAuth verifies that /debug/pprof/ returns 401 when Pprof=true
+// and MetricsAuth=true but no token is presented.
+func TestPprofRequiresAuth(t *testing.T) {
+	cfg := &Config{Token: "tok", MaxConcurrent: 4, MaxBody: 1 << 20, BackendTimeout: 0, Pprof: true, MetricsAuth: true}
+	cfg.sanitize()
+	s := NewServer(cfg, &fakeEngine{count: 1})
+	if w := get(s, "/debug/pprof/"); w.Code != http.StatusUnauthorized {
+		t.Errorf("pprof with auth: /debug/pprof/ (no token) = %d, want 401", w.Code)
+	}
+}

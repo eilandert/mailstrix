@@ -248,6 +248,7 @@ Every setting is an env var and a `serve` CLI flag (flag > env > default).
 | `YARAD_RULE_ALLOWLIST` | — | comma-sep rule names to force log-only (kept + tagged `yarad_allow`); deny wins if in both |
 | `YARAD_VERBOSE` | off | log one line per request |
 | `YARAD_LOG_STDOUT` | off | info/access logs to stdout (errors always stderr) |
+| `YARAD_PPROF` | off | enable `/debug/pprof` profiling endpoints (off by default; auth-gated when `YARAD_METRICS_AUTH` is set) |
 
 **Reload rules:** `docker kill -s HUP yarad` recompiles in place and flushes the
 cache. A reload that fails to compile keeps the previous (working) rules — a bad

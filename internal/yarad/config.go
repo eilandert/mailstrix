@@ -71,6 +71,7 @@ type Config struct {
 	Verbose     bool // YARAD_VERBOSE
 	LogStdout   bool // YARAD_LOG_STDOUT — info/access to stdout; errors stay stderr
 	MetricsAuth bool // YARAD_METRICS_AUTH — require the token for /metrics and /version
+	Pprof       bool // YARAD_PPROF — enable /debug/pprof (off by default, ops-only)
 
 	// URLhaus malware-URL lookup. Disabled unless an abuse.ch Auth-Key is set.
 	URLhausKey     string        // YARAD_URLHAUS_KEY[_FILE] — abuse.ch Auth-Key
@@ -126,6 +127,7 @@ func LoadConfig() *Config {
 		Verbose:        envBool("YARAD_VERBOSE"),
 		LogStdout:      envBool("YARAD_LOG_STDOUT"),
 		MetricsAuth:    envBool("YARAD_METRICS_AUTH"),
+		Pprof:          envBool("YARAD_PPROF"),
 		URLhausKey:     envOrFile("YARAD_URLHAUS_KEY"),
 		URLhausRefresh: envDur("YARAD_URLHAUS_REFRESH", 21600),
 		URLhausMaxURLs: envInt("YARAD_URLHAUS_MAX_URLS", 64),
