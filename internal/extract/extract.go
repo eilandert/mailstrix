@@ -175,6 +175,11 @@ type Result struct {
 	// i.e. an encoded VBScript/JScript, as in .vbe/.jse or embedded in a
 	// .wsf/.hta/.html/.sct) was found and decoded to cleartext for scanning.
 	EncodedScript bool
+	// HasDocProps is true when at least one string was extracted from document
+	// properties (OOXML docProps/*, customXml/, word/settings.xml docVars, or
+	// OLE2 \x05SummaryInformation / \x05DocumentSummaryInformation streams) and
+	// emitted for YARA scanning. Drives the extract_docprops_total metric.
+	HasDocProps bool
 	// DecodedStreams is how many blobs the single-layer static decode pass
 	// (base64/hex/whole-buffer reverse; see decode.go) appended to Streams. These
 	// are the trailing len-N entries of Streams; the caller subtracts them so the
@@ -551,6 +556,9 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time) {
 	// customXml/item*.xml) and word/settings.xml docVars.
 	// Emits "DOCPROPS-STRINGS" marker + extracted strings.
 	fromOOXMLDocProps(zr, &out, deadline)
+	if hasDocPropsMarker(out) {
+		res.HasDocProps = true
+	}
 	res.Streams = out
 	// Every .bin we tried failed to parse and nothing came out: a document that
 	// looks macro-bearing but yields no usable VBA (obfuscated/corrupt/hostile).
