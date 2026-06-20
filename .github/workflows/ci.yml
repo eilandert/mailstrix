@@ -477,6 +477,15 @@ jobs:
       - name: zizmor (Actions supply-chain hardening)
         run: docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/woodruffw/zizmor:1.6.0 --format plain .github/workflows/
 
+      - name: semgrep (non-blocking until tuned)
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            semgrep/semgrep:1.119.0 \
+            semgrep scan --config auto \
+            --exclude 'vendor' --exclude 'testdata' \
+            --error
+
   # NOTE: asan, codeql and fuzz are DEEP, slow, low-per-PR-yield checks — they
   # run MONTHLY (+ on demand) in maintenance.yml, NOT on every PR. The per-PR
   # gate (docker + lint + scanners) stays fast; release.yml reuses THIS workflow
