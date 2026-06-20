@@ -51,11 +51,40 @@ func FuzzExtract(f *testing.F) {
 	// RTF with an \objdata group of odd-length/garbage hex — fuzz the hex decoder
 	// and the fromRTF group-scan bounds (must terminate, never over-read).
 	f.Add([]byte("{\\rtf1{\\object{\\*\\objdata d0cf11e0 a1b11ae1 zz}}}"))
-	// VBA dir-stream seed: exercise walkDirStream bounds-checks via the full
+	// VBA dir-stream seeds: exercise walkDirStream bounds-checks via the full
 	// Extract path (wrapped in an OLE2 container by the fuzzer's mutations).
+	// Single-module baseline.
 	f.Add(buildSyntheticDirStream([]testModule{
 		{name: "Module1", streamName: "Module1", offset: 100},
 	}))
+	// Multi-module: all three must be enumerated.
+	f.Add(buildSyntheticDirStream([]testModule{
+		{name: "Module1", streamName: "Module1", offset: 100},
+		{name: "Module2", streamName: "Module2", offset: 200},
+		{name: "Sheet1", streamName: "Sheet1", offset: 50},
+	}))
+	// MBCS/non-ASCII raw bytes in module name field.
+	f.Add(buildSyntheticDirStream([]testModule{
+		{name: "M\xF3dulo\xFF", streamName: "Mod", offset: 0},
+	}))
+	// Truncated: only the header section present, no module records.
+	f.Add(func() []byte {
+		d := buildSyntheticDirStream(nil) // zero modules → short stream
+		return d
+	}())
+	// Adversarial: module count claims 0xFFFF but body is empty after count field.
+	f.Add(func() []byte {
+		d := buildSyntheticDirStream(nil)
+		patchModuleCount(d, 0xFFFF)
+		return d
+	}())
+	// Adversarial: single record with huge declared size right after the magic.
+	f.Add(func() []byte {
+		var b []byte
+		b = appendU16(b, 0x0001)
+		b = appendU32(b, 0x7FFFFFFF)
+		return b
+	}())
 	f.Add([]byte{})
 	f.Add([]byte("plain text"))
 

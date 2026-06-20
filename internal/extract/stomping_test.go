@@ -159,6 +159,132 @@ func TestWalkDirStream_NoTerminator(t *testing.T) {
 	}
 }
 
+// TestWalkDirStream_MBCSModuleName verifies that modules with non-ASCII
+// (MBCS/Latin-1) names in the MODULENAME record are parsed without panic or
+// truncation. The MODULENAMERECORD field is a raw byte string; walkDirStream
+// must not assume 7-bit ASCII.
+func TestWalkDirStream_MBCSModuleName(t *testing.T) {
+	// Names containing Latin-1 multi-byte sequences. buildSyntheticDirStream
+	// copies the name bytes raw into the MODULENAME record, which is the real
+	// format: arbitrary bytes, not validated for encoding. Module stream names
+	// use ASCII by convention, so only the module names exercise non-ASCII paths.
+	mods := []testModule{
+		{name: "M\xF3dulo1", streamName: "Modulo1", offset: 50},
+		{name: "\xCB\xEE\xF1\xF2", streamName: "Sheet1", offset: 0},
+		{name: "\xE5\xB7\xA5\xE4\xBD\x9C", streamName: "Sheet2", offset: 0},
+	}
+	dir := buildSyntheticDirStream(mods)
+	recs, err := walkDirStream(dir)
+	if err != nil {
+		t.Fatalf("walkDirStream: %v", err)
+	}
+	if len(recs) != len(mods) {
+		t.Fatalf("got %d records, want %d", len(recs), len(mods))
+	}
+	for i, r := range recs {
+		if r.streamName != mods[i].streamName {
+			t.Errorf("rec[%d] streamName = %q, want %q", i, r.streamName, mods[i].streamName)
+		}
+	}
+}
+
+// TestWalkDirStream_UnknownRecordTypes verifies that unknown/vendor record IDs
+// inside a module block are skipped rather than causing a parse error. The
+// MS-OVBA spec reserves certain IDs; implementations must tolerate unknown ones.
+func TestWalkDirStream_UnknownRecordTypes(t *testing.T) {
+	// Build a valid single-module dir stream, then splice in unknown record IDs
+	// before the TERMINATOR to verify they are skipped gracefully.
+	base := buildSyntheticDirStream([]testModule{
+		{name: "Module1", streamName: "Module1", offset: 42},
+	})
+	// Copy the TERMINATOR (last 6 bytes) before splicing — sub-slices share
+	// the backing array, so append into body would corrupt term otherwise.
+	term := make([]byte, 6)
+	copy(term, base[len(base)-6:])
+	body := append([]byte{}, base[:len(base)-6]...)
+
+	unknown := []byte{}
+	unknown = appendU16(unknown, 0x0099) // unknown record ID
+	unknown = appendU32(unknown, 4)
+	unknown = append(unknown, 0xDE, 0xAD, 0xBE, 0xEF)
+	unknown = appendU16(unknown, 0x00AA) // another unknown record ID
+	unknown = appendU32(unknown, 2)
+	unknown = append(unknown, 0xCA, 0xFE)
+
+	patched := append(body, unknown...)
+	patched = append(patched, term...)
+
+	recs, err := walkDirStream(patched)
+	if err != nil {
+		t.Fatalf("walkDirStream with unknown records: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("got %d records, want 1", len(recs))
+	}
+	if recs[0].name != "Module1" || recs[0].offset != 42 {
+		t.Errorf("unexpected record: %+v", recs[0])
+	}
+}
+
+// TestWalkDirStream_ZeroOffset verifies that modules with MODULEOFFSET=0 are
+// returned (offset 0 is valid: the entire stream is source, no p-code).
+func TestWalkDirStream_ZeroOffset(t *testing.T) {
+	dir := buildSyntheticDirStream([]testModule{
+		{name: "Mod", streamName: "Mod", offset: 0},
+	})
+	recs, err := walkDirStream(dir)
+	if err != nil {
+		t.Fatalf("walkDirStream: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("got %d records, want 1", len(recs))
+	}
+	if recs[0].offset != 0 {
+		t.Errorf("offset = %d, want 0", recs[0].offset)
+	}
+}
+
+// TestWalkDirStream_ModuleWithNoStreamName verifies that a module entry missing
+// its MODULESTREAMNAMERECORD is not appended to the result (guard in
+// walkDirStream: only append when streamName != "").
+func TestWalkDirStream_ModuleWithNoStreamName(t *testing.T) {
+	// Build a dir stream for one module but omit the STREAMNAME record.
+	var buf []byte
+	buf = appendU16(buf, 0x0001) // PROJECTSYSKIND
+	buf = appendU32(buf, 4)
+	buf = appendU32(buf, 0)
+	buf = appendU16(buf, 0x000F) // PROJECTMODULES
+	buf = appendU32(buf, 2)
+	buf = appendU16(buf, 1) // count = 1
+
+	buf = appendU16(buf, 0x0013) // PROJECTCOOKIE
+	buf = appendU32(buf, 2)
+	buf = appendU16(buf, 0)
+
+	// Module with NAME but no STREAMNAMERECORD, just OFFSET + TYPE + TERMINATOR.
+	buf = appendU16(buf, 0x0019) // MODULENAME
+	buf = appendU32(buf, 7)
+	buf = append(buf, []byte("NoNamed")...)
+
+	buf = appendU16(buf, 0x0031) // MODULEOFFSET
+	buf = appendU32(buf, 4)
+	buf = appendU32(buf, 10)
+
+	buf = appendU16(buf, 0x0021) // MODULETYPE proc
+	buf = appendU32(buf, 0)
+
+	buf = appendU16(buf, 0x002B) // TERMINATOR
+	buf = appendU32(buf, 0)
+
+	recs, err := walkDirStream(buf)
+	if err != nil {
+		t.Fatalf("walkDirStream: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Errorf("expected 0 records (no stream name), got %d", len(recs))
+	}
+}
+
 type testModule struct {
 	name       string
 	streamName string
