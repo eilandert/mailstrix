@@ -113,6 +113,38 @@ func TestDecodeDepthCapped(t *testing.T) {
 	}
 }
 
+// TestDeepDecodeMarkerEmitted verifies RULE-MSD-MULTILAYER: a payload behind
+// >= deepDecodeLayer stacked base64 layers surfaces an MSD-DEEPDECODE marker
+// carrying the deepest layer reached.
+func TestDeepDecodeMarkerEmitted(t *testing.T) {
+	// inner -> b1(layer1) -> b2(layer2) -> outer(layer3 source). The inner plaintext
+	// is reached at decode layer 3, so the marker must fire with depth>=3.
+	s := "powershellDeeplyNestedPayloadXYZ"
+	for i := 0; i < deepDecodeLayer; i++ {
+		s = base64.StdEncoding.EncodeToString([]byte(s))
+	}
+	res := Extract([]byte(s), time.Time{})
+	if !streamsContain(res, "MSD-DEEPDECODE depth=") {
+		t.Fatalf("MSD-DEEPDECODE marker not emitted for a %d-layer nested payload", deepDecodeLayer)
+	}
+	// The deepest layer reached is >= deepDecodeLayer (the inner plaintext is itself
+	// base64-alphabet, so it may be peeled one extra layer to garbage — exact depth
+	// is incidental; >= the threshold is the contract).
+	if !streamsContain(res, "MSD-DEEPDECODE depth=3") && !streamsContain(res, "MSD-DEEPDECODE depth=4") {
+		t.Fatalf("marker did not carry a layer >= deepDecodeLayer")
+	}
+}
+
+// TestDeepDecodeMarkerNotEmittedShallow verifies a single decode layer does NOT
+// trip the marker — only genuinely stacked nesting (>= deepDecodeLayer) does.
+func TestDeepDecodeMarkerNotEmittedShallow(t *testing.T) {
+	one := base64.StdEncoding.EncodeToString([]byte("plainSingleLayerPayloadNoNest"))
+	res := Extract([]byte(one), time.Time{})
+	if streamsContain(res, "MSD-DEEPDECODE") {
+		t.Fatalf("MSD-DEEPDECODE marker fired on a single-layer (non-nested) payload")
+	}
+}
+
 // TestDecodeRecursesIntoVBAFold verifies looksEncoded re-enqueues a child blob
 // that decoded into a VBA string-build construct: a base64 layer hiding a
 // Replace(...) call must fold to the cleartext payload one layer down.

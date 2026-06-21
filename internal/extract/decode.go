@@ -60,6 +60,15 @@ const (
 	// safety floor against a decode cycle or fan-out that the depth and blob/byte
 	// budgets somehow don't already stop (the blob budget normally bites first).
 	maxDecodeIterations = 256
+	// deepDecodeLayer is the decode-layer at/after which a successfully emitted blob
+	// is treated as a strong maliciousness signal (RULE-MSD-MULTILAYER). The source
+	// is layer 0; a blob decoded out of the source is layer 1; a blob decoded out of
+	// THAT is layer 2; etc. A blob surfacing at layer >= this many stacked decodes
+	// (base64-over-hex-over-… nesting) has no benign analogue — legitimate content is
+	// never multiply re-encoded — so decodeSourceTree emits ONE "MSD-DEEPDECODE
+	// depth=<n>" marker per source tree carrying the deepest layer reached, and a
+	// YARA rule scores it. 3 == three stacked decode passes produced output.
+	deepDecodeLayer = 3
 	// maxB64Encoded / maxHexEncoded bound the ENCODED candidate length we hand to
 	// a decoder, so one giant run can't allocate/copy far past maxBytesPerDecodedBlob
 	// before the emit cap truncates (base64 expands ~4/3, hex 2x). Both stay
@@ -518,6 +527,13 @@ func decodeSourceTree(src []byte, res *Result, deadline time.Time) int {
 	// children collects the blobs emitted while decoding the CURRENT item, so we
 	// can decide which to re-enqueue one layer deeper after the decoders run.
 	var children [][]byte
+	// RULE-MSD-MULTILAYER: curLayer is the decode-layer of the blob emit() produces
+	// (the depth of the item currently being decoded, +1 — a blob decoded OUT of a
+	// depth-d item is one layer deeper than it). maxLayer tracks the deepest layer at
+	// which any blob was actually emitted, so a single MSD-DEEPDECODE marker can carry
+	// it after the walk. Set per iteration before the decoders run.
+	curLayer := 0
+	maxLayer := 0
 	emit := func(b []byte) bool {
 		if len(b) < minDecodedLen {
 			return true
@@ -540,6 +556,9 @@ func decodeSourceTree(src []byte, res *Result, deadline time.Time) int {
 		seen[fnv64(b)] = struct{}{} // record only accepted blobs
 		blobs++
 		cum += len(b)
+		if curLayer > maxLayer {
+			maxLayer = curLayer // deepest layer that actually yielded a distinct blob
+		}
 		return true
 	}
 
@@ -557,6 +576,9 @@ func decodeSourceTree(src []byte, res *Result, deadline time.Time) int {
 			continue
 		}
 
+		// A blob emitted while decoding this depth-cur.depth item is one decode
+		// layer deeper than it (RULE-MSD-MULTILAYER layer accounting).
+		curLayer = cur.depth + 1
 		children = children[:0]
 		ok := decodeBase64Runs(cur.data, deadline, emit) &&
 			decodeHexRuns(cur.data, deadline, emit) &&
@@ -589,6 +611,16 @@ func decodeSourceTree(src []byte, res *Result, deadline time.Time) int {
 		if !ok {
 			break // a per-source budget cap was hit — stop this source's tree
 		}
+	}
+	// RULE-MSD-MULTILAYER: a blob surfaced at >= deepDecodeLayer stacked decode
+	// passes — base64-over-hex-over-… nesting with no benign analogue. Emit ONE
+	// marker per source tree carrying the deepest layer reached so a YARA rule can
+	// score it. Appended directly (the marker is not itself decode input, so it
+	// bypasses dedup/re-enqueue) but still honours maxStreams, and is counted in
+	// the returned blob total so the caller's DecodedStreams metric stays exact.
+	if maxLayer >= deepDecodeLayer && len(res.Streams) < maxStreams {
+		res.Streams = append(res.Streams, []byte("MSD-DEEPDECODE depth="+strconv.Itoa(maxLayer)))
+		blobs++
 	}
 	return blobs
 }

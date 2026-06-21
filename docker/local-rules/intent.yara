@@ -103,3 +103,23 @@ rule VBA_Environ_Probe : maldoc heuristic suspicious {
     condition:
         $marker
 }
+
+// MSD-DEEPDECODE depth=<n> markers are emitted by the recursive multi-layer
+// decoder (internal/extract/decode.go decodeSourceTree) when a payload surfaces
+// only after >= deepDecodeLayer (3) STACKED decode passes — e.g.
+// base64-over-hex-over-base64 nesting. Legitimate content is never multiply
+// re-encoded, so the marker has no benign analogue; the prefix is emitted only by
+// yarad (zero-FP literal). Deep nesting is a deliberate detection-evasion signal
+// on its own, so a high score; whatever payload was finally unwrapped is ALSO
+// scanned by the keyword/URL rules and stacks on top.
+rule Multilayer_Encoded_Payload : maldoc heuristic suspicious {
+    meta:
+        author      = "yarad"
+        description = "Payload hidden behind >=3 stacked decode layers (base64/hex/etc nesting) — deliberate obfuscation"
+        reference   = "https://github.com/decalage2/oletools/wiki/olevba"
+        score       = "70"
+    strings:
+        $marker = "MSD-DEEPDECODE depth="
+    condition:
+        $marker
+}
