@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested"
 
 // OLE2/CFB compound-document magic (legacy .doc/.xls, the vbaProject.bin
 // embedded in OOXML, AND the encrypted-OOXML wrapper) and the local-file-header
@@ -217,10 +217,16 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 		}
 	}()
 
+	// One shared nested-carrier budget for the whole input: archive members,
+	// .msg attachments, OLE Package payloads, and RTF objects all recurse through
+	// extractChild against this budget so a fan-out / deeply nested carrier set is
+	// bounded as a unit (see nested.go).
+	b := &archiveBudget{}
+
 	switch {
 	case bytes.HasPrefix(buf, oleMagic):
 		res.IsDoc = true
-		fromOLE(buf, &res, deadline)
+		fromOLE(buf, &res, b, 0, deadline)
 	case bytes.HasPrefix(buf, zipMagic):
 		res.IsDoc = true // zip magic matched — a container attempt (per Result.IsDoc)
 		// A zip is either an OOXML/ODF Office document (handle via the macro path
@@ -230,14 +236,14 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 		// an Office doc.
 		fromOOXML(buf, &res, deadline)
 		if !isOfficeZip(buf) {
-			fromArchive(buf, &res, &archiveBudget{}, 0, deadline)
+			fromArchive(buf, &res, b, 0, deadline)
 		}
 	case isArchive(buf):
 		// A non-zip archive (gz/7z/rar). Unpack members (recursing into nested
 		// archives/containers) so a dropped payload is scanned, not just the
 		// opaque outer bytes.
 		res.IsDoc = true
-		fromArchive(buf, &res, &archiveBudget{}, 0, deadline)
+		fromArchive(buf, &res, b, 0, deadline)
 	case isPDF(buf):
 		// A PDF: inflate its FlateDecode object streams so hidden JS / actions /
 		// embedded files are scanned, not buried in compressed objects.
@@ -248,7 +254,7 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 		// dropped OLE2 doc / package / OLENativeStream payload (CVE-2017-0199 /
 		// -11882, OLE2Link) is scanned, not buried in the RTF hex.
 		res.IsDoc = true
-		fromRTF(buf, &res, deadline)
+		fromRTF(buf, &res, b, 0, deadline)
 	case isLNK(buf):
 		// A Windows shell link (.lnk): surface its StringData (command-line
 		// arguments / paths) so the dropper command is matched, not buried in the
@@ -294,7 +300,13 @@ func expired(deadline time.Time) bool {
 // is single-shot (one NewOLEFile + ExtractMacros) so it can't be interrupted
 // mid-parse; instead it refuses to start when the budget is already spent or the
 // legacy container is implausibly large — the raw scan still happens either way.
-func fromOLE(buf []byte, res *Result, deadline time.Time) {
+func fromOLE(buf []byte, res *Result, bud *archiveBudget, depth int, deadline time.Time) {
+	// Stream count at entry. On a NESTED OLE child (carried in a .msg/Ole10Native/
+	// RTF object/archive member) res.Streams already holds parent + sibling output,
+	// so "did THIS OLE yield anything" must be measured as a delta from here, not as
+	// the global len(res.Streams) (else a no-VBA nested OLE's .msg/MSI fallback would
+	// be wrongly skipped just because a parent stream exists).
+	streamsBefore := len(res.Streams)
 	if !deadline.IsZero() && time.Now().After(deadline) {
 		res.Failed = true
 		return
@@ -323,7 +335,7 @@ func fromOLE(buf []byte, res *Result, deadline time.Time) {
 		// A macro-extraction error on a real MSI/.msg is expected (no VBA project),
 		// so don't fail outright — fall through to the MSG (Outlook) and MSI paths,
 		// which decide whether this OLE2 is one of those worth dumping.
-		if !fromMSG(ole, res, deadline) && !fromMSI(ole, res, deadline) && !fromOLEPackage(ole, res, deadline) {
+		if !fromMSG(ole, res, bud, depth, deadline) && !fromMSI(ole, res, deadline) && !fromOLEPackage(ole, res, bud, depth, deadline) {
 			res.Failed = true
 		}
 		// Even when VBA extraction fails, a legacy spreadsheet may carry hidden
@@ -336,7 +348,11 @@ func fromOLE(buf []byte, res *Result, deadline time.Time) {
 		fromOLE2Link(ole, res, deadline)
 		return
 	}
-	res.Streams = codes(mods, nil)
+	// Append (not overwrite): when fromOLE runs on a NESTED child (an OLE2 carried
+	// in a .msg attachment / Ole10Native payload / RTF object / archive member via
+	// extractChild) res.Streams already holds the parent's and siblings' streams —
+	// seeding codes() with the existing slice preserves them instead of erasing.
+	res.Streams = codes(mods, res.Streams)
 	// Detect VBA stomping: substantial p-code but trivial/missing source.
 	// Emits "VBA-STOMPED <name> pcode=<n> src=<n>" markers for YARA matching.
 	detectStomping(ole, res, deadline)
@@ -351,7 +367,7 @@ func fromOLE(buf []byte, res *Result, deadline time.Time) {
 	// An embedded OLE Package object (dropped .exe/.bat in an Ole10Native stream)
 	// can ride alongside macros, so always carve it regardless of whether VBA was
 	// found — it's a no-op when the doc has no package stream.
-	fromOLEPackage(ole, res, deadline)
+	fromOLEPackage(ole, res, bud, depth, deadline)
 	// oleid-style structural indicators: an ObjectPool storage (embedded OLE
 	// objects) and embedded Flash/SWF objects. Emits OLEID-* markers.
 	fromOLEIndicators(ole, res, deadline)
@@ -367,8 +383,8 @@ func fromOLE(buf []byte, res *Result, deadline time.Time) {
 	// attachment files out and scan them) or an MSI (dump its payload streams).
 	// Both helpers are no-ops for an OLE2 that isn't theirs. Try MSG first — a
 	// .msg has no MSI CLSID so the order is safe.
-	if len(res.Streams) == 0 {
-		if !fromMSG(ole, res, deadline) {
+	if len(res.Streams) == streamsBefore {
+		if !fromMSG(ole, res, bud, depth, deadline) {
 			fromMSI(ole, res, deadline)
 		}
 	}
@@ -471,10 +487,13 @@ func isMSG(ole *oleparse.OLEFile) bool {
 // the rules — the attachment is the dangerous part, and it's otherwise buried in
 // the OLE2 binary. Returns true if buf was a .msg (whether or not any attachment
 // was emitted). Bounded by the maxMSG* caps; best-effort, never panics out (the
-// caller's recover covers it). Note: a nested attachment that is itself a doc/
-// archive is not recursively re-extracted here — it is scanned as raw bytes,
-// which still fires container/keyword rules; deep recursion is a separate item.
-func fromMSG(ole *oleparse.OLEFile, res *Result, deadline time.Time) bool {
+// caller's recover covers it). A nested attachment that is itself a carrier
+// (PDF, Office doc, archive, .msg, RTF, .lnk, encoded script) is additionally
+// routed through extractChild so its own format is cracked (a child PDF's
+// FlateDecode JS / child Office macro is otherwise invisible one layer deep);
+// the raw attachment bytes are still surfaced for the leaf scan. bud/depth are
+// the shared nested-carrier budget (see nested.go).
+func fromMSG(ole *oleparse.OLEFile, res *Result, bud *archiveBudget, depth int, deadline time.Time) bool {
 	if !isMSG(ole) {
 		return false
 	}
@@ -488,7 +507,7 @@ func fromMSG(ole *oleparse.OLEFile, res *Result, deadline time.Time) bool {
 		if n != msgAttachData1 && n != msgAttachData2 {
 			continue
 		}
-		if len(res.Streams) >= maxMSGAttachments || total >= maxTotalMSG || expired(deadline) {
+		if len(res.Streams) >= maxMSGAttachments || total >= maxTotalMSG || expired(deadline) || bud.spent() {
 			break
 		}
 		b := ole.GetStream(d.Index)
@@ -500,6 +519,13 @@ func fromMSG(ole *oleparse.OLEFile, res *Result, deadline time.Time) bool {
 		}
 		res.Streams = append(res.Streams, b)
 		total += len(b)
+		// Charge the shared nested-carrier budget so a .msg → carrier fan-out is
+		// bounded together with archive members (see nested.go), then crack the
+		// attachment's own carrier layer if it is one (depth+1: one carrier deeper
+		// than this .msg). No-op for an ordinary file.
+		bud.members++
+		bud.total += len(b)
+		extractChild(b, res, bud, depth+1, deadline)
 	}
 	return true
 }
@@ -515,7 +541,14 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time) {
 		res.Failed = true
 		return
 	}
-	var out [][]byte
+	// Seed from the existing streams (not an empty slice): on a NESTED child (an
+	// Office zip carried in a .msg/Ole10Native/RTF object/archive member via
+	// extractChild) res.Streams already holds parent + sibling streams, and the
+	// final `res.Streams = out` must extend them, not erase them. At top level
+	// res.Streams is empty so this is a no-op. The macro/cap counters below then
+	// also bound the cumulative (parent-inclusive) total, which is the intent.
+	out := res.Streams
+	parentStreams := len(out) // streams already present (nested child); excluded from the Failed delta
 	var totalCode, totalBin, attempted, failedBins int
 	for i, f := range zr.File {
 		if i >= maxZipEntries {
@@ -592,7 +625,7 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time) {
 	// looks macro-bearing but yields no usable VBA (obfuscated/corrupt/hostile).
 	// Mark it failed so it shows up in extract_failed_total rather than silently
 	// looking like a clean macro-free doc.
-	if attempted > 0 && len(out) == 0 && failedBins == attempted {
+	if attempted > 0 && len(out) == parentStreams && failedBins == attempted {
 		res.Failed = true
 	}
 }

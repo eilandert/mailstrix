@@ -56,8 +56,11 @@ const (
 // fromOLEPackage scans an OLE2's directory for Ole10Native streams and appends
 // each embedded file's NativeData to res.Streams. Returns true if at least one
 // Ole10Native stream was found (whether or not its data parsed). Bounded by the
-// maxPackage* caps.
-func fromOLEPackage(ole *oleparse.OLEFile, res *Result, deadline time.Time) bool {
+// maxPackage* caps. A carved payload that is itself a carrier (a dropped
+// .docm/.zip/.pdf/.msg) is additionally routed through extractChild so its own
+// format is cracked, not just scanned as raw bytes; bud/depth are the shared
+// nested-carrier budget (see nested.go).
+func fromOLEPackage(ole *oleparse.OLEFile, res *Result, bud *archiveBudget, depth int, deadline time.Time) bool {
 	if ole == nil {
 		return false
 	}
@@ -71,7 +74,7 @@ func fromOLEPackage(ole *oleparse.OLEFile, res *Result, deadline time.Time) bool
 			continue
 		}
 		found = true
-		if len(res.Streams) >= maxPackageObjects || total >= maxTotalPackage || expired(deadline) {
+		if len(res.Streams) >= maxPackageObjects || total >= maxTotalPackage || expired(deadline) || bud.spent() {
 			break
 		}
 		b := ole.GetStream(d.Index)
@@ -82,9 +85,15 @@ func fromOLEPackage(ole *oleparse.OLEFile, res *Result, deadline time.Time) bool
 		if len(data) > maxBytesPerPackage {
 			data = data[:maxBytesPerPackage]
 		}
-		res.Streams = append(res.Streams, append([]byte(nil), data...))
+		payload := append([]byte(nil), data...)
+		res.Streams = append(res.Streams, payload)
 		res.IsOLEPackage = true
 		total += len(data)
+		// Charge the shared nested-carrier budget, then crack the dropped file's
+		// own carrier layer if it is one (depth+1). See nested.go.
+		bud.members++
+		bud.total += len(payload)
+		extractChild(payload, res, bud, depth+1, deadline)
 	}
 	return found
 }

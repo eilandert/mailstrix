@@ -150,32 +150,12 @@ func emitMember(data []byte, res *Result, b *archiveBudget, depth int, deadline 
 	b.total += len(data)
 	res.Streams = append(res.Streams, data)
 	res.IsArchive = true
-	// Recurse: a member may be a nested archive OR another container type we know
-	// how to crack (OLE2 macro doc, OOXML, OneNote). Handle the nested-archive case
-	// here (shares the budget); for the other container types reuse their helpers
-	// so a .docm or .one dropped inside a zip is fully extracted too. The deadline
-	// carries down so a CPU-heavy nested decompressor can't overrun the budget.
-	if depth+1 > maxArchiveDepth || expired(deadline) {
-		return
-	}
-	switch {
-	case bytes.HasPrefix(data, zipMagic):
-		// A nested zip: an Office doc gets the macro path; a plain zip gets member
-		// unpacking. Mirror the top-level dispatch so an Office doc inside an
-		// archive isn't part-dumped (FP guard).
-		if isOfficeZip(data) {
-			fromOOXML(data, res, deadline)
-		} else {
-			fromArchive(data, res, b, depth+1, deadline)
-		}
-	case isArchive(data):
-		fromArchive(data, res, b, depth+1, deadline)
-	case bytes.HasPrefix(data, oleMagic):
-		// An OLE2 member: macro doc, MSI, or .msg. fromOLE handles all three.
-		fromOLE(data, res, deadline)
-	case isOneNote(data):
-		fromOneNote(data, res, deadline)
-	}
+	// Recurse: a member may be a nested archive OR another carrier we know how to
+	// crack (OLE2 macro doc / MSI / .msg, OOXML, OneNote, PDF, RTF, .lnk, encoded
+	// script). extractChild dispatches by magic on the shared budget so a .docm,
+	// a child PDF's FlateDecode JS, or a dropped .vbe inside a zip is fully
+	// extracted too (depth+1: one carrier deeper than this archive).
+	extractChild(data, res, b, depth+1, deadline)
 }
 
 // readMember reads one archive member from rc, bounded by maxBytesPerMember so a

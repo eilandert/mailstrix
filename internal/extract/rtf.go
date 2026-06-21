@@ -134,8 +134,9 @@ func detectRTFDDE(buf []byte, res *Result, deadline time.Time) {
 // the same OLE2 extraction as a standalone document (macros + package + MSI +
 // .msg); for a bare OLENativeStream it carves the native file via
 // carveOle10Native. Sets res.IsRTF whenever the buffer is RTF (whether or not any
-// object decoded). Bounded by the maxRTF* caps.
-func fromRTF(buf []byte, res *Result, deadline time.Time) {
+// object decoded). Bounded by the maxRTF* caps. bud/depth are the shared
+// nested-carrier budget threaded into carveRTFObject (see nested.go).
+func fromRTF(buf []byte, res *Result, bud *archiveBudget, depth int, deadline time.Time) {
 	res.IsRTF = true
 
 	// DDE field detection (runs before objdata scan).
@@ -154,7 +155,7 @@ func fromRTF(buf []byte, res *Result, deadline time.Time) {
 		// groups examined — a hostile message stuffed with thousands of empty/
 		// malformed groups yields no streams, so a stream-count guard alone would
 		// never trip; objs caps the decode/index work regardless of yield.
-		if objs >= maxRTFObjects || len(res.Streams) >= maxStreams || total >= maxTotalRTF || expired(deadline) {
+		if objs >= maxRTFObjects || len(res.Streams) >= maxStreams || total >= maxTotalRTF || expired(deadline) || bud.spent() {
 			break
 		}
 		idx := bytes.Index(rest, []byte(rtfObjDataKW))
@@ -173,7 +174,7 @@ func fromRTF(buf []byte, res *Result, deadline time.Time) {
 			blob = blob[:maxBytesPerRTFObject]
 		}
 		total += len(blob)
-		carveRTFObject(blob, res, deadline)
+		carveRTFObject(blob, res, bud, depth, deadline)
 	}
 }
 
@@ -305,7 +306,15 @@ func decodeRTFHex(b []byte) []byte {
 // bare OLENativeStream/Ole10Native. Try OLE2 first (covers the embedded-doc and
 // OLE-package cases via the existing helpers); fall back to a direct Ole10Native
 // carve for the bare-stream case. Best-effort; a parse failure is skipped.
-func carveRTFObject(blob []byte, res *Result, deadline time.Time) {
+// bud/depth are the shared nested-carrier budget: a carved package payload that
+// is itself a carrier is routed through extractChild (see nested.go).
+func carveRTFObject(blob []byte, res *Result, bud *archiveBudget, depth int, deadline time.Time) {
+	// Charge the decoded \objdata blob against the shared nested-carrier budget once
+	// here (covers BOTH the CFB and bare-Ole10Native branches below), so an RTF that
+	// fans out many embedded objects is bounded together with archive members and
+	// .msg attachments — fromRTF's loop trips on bud.spent() on the next iteration.
+	bud.members++
+	bud.total += len(blob)
 	// An OLENativeStream begins with the OLE2 magic only when it wraps a CFB; the
 	// bare Packager form does not. Many \objdata blobs are prefixed with an
 	// OLEStream header before the CFB magic, so search rather than require a prefix.
@@ -316,8 +325,8 @@ func carveRTFObject(blob []byte, res *Result, deadline time.Time) {
 			if mods, err := oleparse.ExtractMacros(ole); err == nil {
 				res.Streams = codes(mods, res.Streams)
 			}
-			fromOLEPackage(ole, res, deadline)
-			if !fromMSG(ole, res, deadline) {
+			fromOLEPackage(ole, res, bud, depth, deadline)
+			if !fromMSG(ole, res, bud, depth, deadline) {
 				fromMSI(ole, res, deadline)
 			}
 			return
@@ -327,6 +336,10 @@ func carveRTFObject(blob []byte, res *Result, deadline time.Time) {
 	// native file data directly (sibling of the #14 OLE2-storage path).
 	if data := carveOle10Native(blob); len(data) > 0 {
 		res.IsOLEPackage = true
-		res.Streams = append(res.Streams, append([]byte(nil), data...))
+		payload := append([]byte(nil), data...)
+		res.Streams = append(res.Streams, payload)
+		// Blob already charged to bud at function entry; just crack the dropped
+		// file's own carrier layer if it is one (depth+1). See nested.go.
+		extractChild(payload, res, bud, depth+1, deadline)
 	}
 }
