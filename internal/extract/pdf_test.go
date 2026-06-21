@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/zlib"
+	"encoding/ascii85"
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"testing"
@@ -278,6 +280,231 @@ func TestExtractPDFEndstreamInCompressedBody(t *testing.T) {
 	res := Extract(buf.Bytes(), time.Time{})
 	if !streamsContain(res, "PDF_TAIL_KEYWORD") {
 		t.Errorf("payload past the embedded 'endstream' not inflated (carve truncated early); streams=%v", res.Streams)
+	}
+}
+
+func ascii85Encode(data []byte) []byte {
+	var b bytes.Buffer
+	w := ascii85.NewEncoder(&b)
+	_, _ = w.Write(data)
+	_ = w.Close()
+	return b.Bytes()
+}
+
+// pdfWithFilter wraps body in a single PDF object carrying the given /Filter and
+// a correct direct /Length.
+func pdfWithFilter(filter string, body []byte) []byte {
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.7\n1 0 obj\n<< /Length " + strconv.Itoa(len(body)) + " /Filter " + filter + " >>\nstream\n")
+	b.Write(body)
+	b.WriteString("\nendstream\nendobj\n%%EOF")
+	return b.Bytes()
+}
+
+// AUDIT-PDF-FILTER-CHAIN: an ASCII85Decode→FlateDecode chain (the deflate body
+// armoured as ASCII85 text) must be un-armoured then inflated, surfacing the JS.
+func TestExtractPDFASCII85FlateChain(t *testing.T) {
+	js := []byte("app.alert('A85_FLATE_CHAIN_JS_KEYWORD'); this.exportDataObject()")
+	body := ascii85Encode(zlibDeflate(js))
+	res := Extract(pdfWithFilter("[/ASCII85Decode /FlateDecode]", body), time.Time{})
+	if !streamsContain(res, "A85_FLATE_CHAIN_JS_KEYWORD") {
+		t.Errorf("ASCII85→Flate chain not decoded+inflated; streams=%v", res.Streams)
+	}
+}
+
+// ASCIIHexDecode→FlateDecode chain (with the '>' EOD marker).
+func TestExtractPDFASCIIHexFlateChain(t *testing.T) {
+	js := []byte("this.exportDataObject('AHX_FLATE_CHAIN_JS_KEYWORD')")
+	body := append([]byte(hex.EncodeToString(zlibDeflate(js))), '>')
+	res := Extract(pdfWithFilter("[/ASCIIHexDecode /FlateDecode]", body), time.Time{})
+	if !streamsContain(res, "AHX_FLATE_CHAIN_JS_KEYWORD") {
+		t.Errorf("ASCIIHex→Flate chain not decoded+inflated; streams=%v", res.Streams)
+	}
+}
+
+// A prefilter-only chain (bare /ASCII85Decode, no Flate) must surface the decoded
+// cleartext directly.
+func TestExtractPDFASCII85Only(t *testing.T) {
+	payload := []byte("/JS bare_ASCII85_CLEARTEXT_KEYWORD app.alert(1)")
+	res := Extract(pdfWithFilter("/ASCII85Decode", ascii85Encode(payload)), time.Time{})
+	if !streamsContain(res, "bare_ASCII85_CLEARTEXT_KEYWORD") {
+		t.Errorf("bare ASCII85 cleartext not surfaced; streams=%v", res.Streams)
+	}
+}
+
+// Evasion (golang-pro audit F2): a prefilter-only `/Filter /ASCII85Decode` whose
+// decoded bytes are RAW deflate (the dict dropped the trailing /FlateDecode) must
+// still surface the JS — the surface path emits the raw-inflated stream in
+// addition to the (compressed) cleartext, so YARA isn't blinded by deflate bytes.
+func TestExtractPDFASCII85RawDeflateNoFlateName(t *testing.T) {
+	js := []byte("app.alert('A85_RAWDEFLATE_NOFILTERNAME_KEYWORD')")
+	body := ascii85Encode(rawDeflate(js))
+	res := Extract(pdfWithFilter("/ASCII85Decode", body), time.Time{})
+	if !streamsContain(res, "A85_RAWDEFLATE_NOFILTERNAME_KEYWORD") {
+		t.Errorf("prefilter-only ASCII85 wrapping raw-deflate evaded extraction; streams=%v", res.Streams)
+	}
+}
+
+// Boundary (golang-pro audit F1): "/FilterFoo" must never be parsed as "/Filter"
+// even when it abuts the search-window end — pdfStreamFilters must reject it.
+func TestPDFStreamFiltersShadowAtWindowEnd(t *testing.T) {
+	// /FilterFoo with the value (a name) right up against `stream`; no real /Filter.
+	s := "1 0 obj\n<< /FilterFoo /ASCII85Decode >>stream\n"
+	sp := strings.Index(s, "stream")
+	if got := pdfStreamFilters([]byte(s), sp); got != nil {
+		t.Errorf("/FilterFoo shadowed /Filter at window end, got %v", got)
+	}
+}
+
+// Filter abbreviations (A85 / Fl) must be recognised the same as the long names.
+func TestExtractPDFFilterAbbrev(t *testing.T) {
+	js := []byte("app.alert('A85_ABBREV_JS_KEYWORD')")
+	body := ascii85Encode(zlibDeflate(js))
+	res := Extract(pdfWithFilter("[/A85 /Fl]", body), time.Time{})
+	if !streamsContain(res, "A85_ABBREV_JS_KEYWORD") {
+		t.Errorf("abbreviated filter chain not handled; streams=%v", res.Streams)
+	}
+}
+
+// A decoy `/Filter` (e.g. picked by LastIndex from a string value) must NOT be
+// able to disable extraction of a real deflate stream: the body-inflate fallback
+// recovers it.
+func TestExtractPDFDecoyFilterRecovered(t *testing.T) {
+	js := []byte("app.alert('DECOY_FILTER_RECOVERED_JS_KEYWORD')")
+	body := zlibDeflate(js)
+	// Real filter is /FlateDecode; a decoy "/Filter /ASCII85Decode" hides in a
+	// /Title string AFTER it, so pdfStreamFilters' LastIndex picks the decoy.
+	dict := "<< /Filter /FlateDecode /Title (x /Filter /ASCII85Decode x) /Length " + strconv.Itoa(len(body)) + " >>"
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.7\n1 0 obj\n" + dict + "\nstream\n")
+	buf.Write(body)
+	buf.WriteString("\nendstream\nendobj\n%%EOF")
+	res := Extract(buf.Bytes(), time.Time{})
+	if !streamsContain(res, "DECOY_FILTER_RECOVERED_JS_KEYWORD") {
+		t.Errorf("decoy /Filter disabled extraction of a real deflate stream; streams=%v", res.Streams)
+	}
+}
+
+// A decoy `/Filter /FlateDecode` in a string must NOT hide a real armoured
+// `[/ASCII85Decode /FlateDecode]` chain: the opportunistic un-armour retry
+// recovers the payload even when the dict scan picks the decoy.
+func TestExtractPDFDecoyFlateHidesArmouredChain(t *testing.T) {
+	js := []byte("app.alert('DECOY_FLATE_ARMOURED_RECOVERED_KEYWORD')")
+	body := ascii85Encode(zlibDeflate(js))
+	dict := "<< /Filter [/ASCII85Decode /FlateDecode] /Note (x /Filter /FlateDecode x) /Length " + strconv.Itoa(len(body)) + " >>"
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.7\n1 0 obj\n" + dict + "\nstream\n")
+	buf.Write(body)
+	buf.WriteString("\nendstream\nendobj\n%%EOF")
+	res := Extract(buf.Bytes(), time.Time{})
+	if !streamsContain(res, "DECOY_FLATE_ARMOURED_RECOVERED_KEYWORD") {
+		t.Errorf("decoy /FlateDecode hid the real armoured chain; streams=%v", res.Streams)
+	}
+}
+
+// A decoy prefilter-only `/Filter /ASCII85Decode` in a string must NOT override
+// the real `[/ASCII85Decode /FlateDecode]` chain (which would make the surface
+// path emit still-compressed bytes): the window scrub blanks the string decoy so
+// the real chain is parsed and the body is inflated.
+func TestExtractPDFDecoyPrefilterOnlyInString(t *testing.T) {
+	js := []byte("app.alert('DECOY_PREFILTER_ONLY_RECOVERED_KEYWORD')")
+	body := ascii85Encode(zlibDeflate(js))
+	dict := "<< /Filter [/ASCII85Decode /FlateDecode] /Note (z /Filter /ASCII85Decode z) /Length " + strconv.Itoa(len(body)) + " >>"
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.7\n1 0 obj\n" + dict + "\nstream\n")
+	buf.Write(body)
+	buf.WriteString("\nendstream\nendobj\n%%EOF")
+	res := Extract(buf.Bytes(), time.Time{})
+	if !streamsContain(res, "DECOY_PREFILTER_ONLY_RECOVERED_KEYWORD") {
+		t.Errorf("decoy prefilter-only /Filter in a string broke real-chain extraction; streams=%v", res.Streams)
+	}
+}
+
+// An unterminated `(` before the real /Filter must NOT blank through and erase
+// it (over-blank evasion): a prefilter-only stream must still surface.
+func TestExtractPDFUnterminatedStringKeepsFilter(t *testing.T) {
+	payload := []byte("UNTERMINATED_KEPT_FILTER_CLEARTEXT_KEYWORD app.alert(1)")
+	body := ascii85Encode(payload)
+	dict := "<< /Title (oops-no-close-paren /Filter /ASCII85Decode /Length " + strconv.Itoa(len(body)) + " >>"
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.7\n1 0 obj\n" + dict + "\nstream\n")
+	buf.Write(body)
+	buf.WriteString("\nendstream\nendobj\n%%EOF")
+	res := Extract(buf.Bytes(), time.Time{})
+	if !streamsContain(res, "UNTERMINATED_KEPT_FILTER_CLEARTEXT_KEYWORD") {
+		t.Errorf("unterminated '(' erased the real /Filter; streams=%v", res.Streams)
+	}
+}
+
+// A decoy prefilter-only /Filter hidden in an UNTERMINATED string (left visible
+// by the scrub) can win LastIndex and force the surface path; the zlib-recheck
+// must self-correct by inflating the genuinely-compressed body.
+func TestExtractPDFUnterminatedDecoySurfaceSelfCorrects(t *testing.T) {
+	js := []byte("app.alert('UNTERM_DECOY_SELFCORRECT_KEYWORD')")
+	body := ascii85Encode(zlibDeflate(js))
+	dict := "<< /Filter [/ASCII85Decode /FlateDecode] /Length " + strconv.Itoa(len(body)) + " /X (oops /Filter /ASCII85Decode >>"
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.7\n1 0 obj\n" + dict + "\nstream\n")
+	buf.Write(body)
+	buf.WriteString("\nendstream\nendobj\n%%EOF")
+	res := Extract(buf.Bytes(), time.Time{})
+	if !streamsContain(res, "UNTERM_DECOY_SELFCORRECT_KEYWORD") {
+		t.Errorf("surface zlib-recheck failed to self-correct a mis-parsed /Filter; streams=%v", res.Streams)
+	}
+}
+
+// A chain with a terminal binary filter (/ASCII85Decode → /DCTDecode) must NOT
+// surface the un-armoured (still-binary, non-cleartext) bytes as a stream.
+func TestExtractPDFASCII85DCTNotSurfaced(t *testing.T) {
+	decoy := []byte("NOT_CLEARTEXT_SHOULD_NOT_SURFACE_KEYWORD")
+	res := Extract(pdfWithFilter("[/ASCII85Decode /DCTDecode]", ascii85Encode(decoy)), time.Time{})
+	if streamsContain(res, "NOT_CLEARTEXT_SHOULD_NOT_SURFACE_KEYWORD") {
+		t.Errorf("ASCII85→DCT (binary terminal) wrongly surfaced as cleartext; streams=%v", res.Streams)
+	}
+}
+
+// pdfStreamFilters parsing: single name, array, abbreviation, indirect → nil.
+func TestPDFStreamFilters(t *testing.T) {
+	sp := func(s string) int { return strings.Index(s, "stream") }
+	eq := func(got []string, want ...string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+	single := "1 0 obj\n<< /Filter /FlateDecode >>\nstream\n"
+	if !eq(pdfStreamFilters([]byte(single), sp(single)), "FlateDecode") {
+		t.Errorf("single: %v", pdfStreamFilters([]byte(single), sp(single)))
+	}
+	arr := "1 0 obj\n<< /Filter [ /ASCII85Decode /FlateDecode ] >>\nstream\n"
+	if !eq(pdfStreamFilters([]byte(arr), sp(arr)), "ASCII85Decode", "FlateDecode") {
+		t.Errorf("array: %v", pdfStreamFilters([]byte(arr), sp(arr)))
+	}
+	// Hex-escaped name /ASCII#38#35Decode must decode to ASCII85Decode (#XX, 7.3.5).
+	hexName := "1 0 obj\n<< /Filter /ASCII#38#35Decode >>\nstream\n"
+	if !eq(pdfStreamFilters([]byte(hexName), sp(hexName)), "ASCII85Decode") {
+		t.Errorf("hex-escaped filter name: %v", pdfStreamFilters([]byte(hexName), sp(hexName)))
+	}
+	// Indirect /Filter — unresolvable, must be nil.
+	ind := "1 0 obj\n<< /Filter 7 0 R >>\nstream\n"
+	if got := pdfStreamFilters([]byte(ind), sp(ind)); got != nil {
+		t.Errorf("indirect /Filter should be nil, got %v", got)
+	}
+	// Array with a trailing indirect ref — partial/unresolvable, must be nil (not
+	// a truncated ["ASCII85Decode"] that would be treated as prefilter-only).
+	arrInd := "1 0 obj\n<< /Filter [ /ASCII85Decode 7 0 R ] >>\nstream\n"
+	if got := pdfStreamFilters([]byte(arrInd), sp(arrInd)); got != nil {
+		t.Errorf("array with indirect element should be nil, got %v", got)
+	}
+	// /FilterFoo must not shadow /Filter.
+	shadow := "1 0 obj\n<< /FilterFoo /X >>\nstream\n"
+	if got := pdfStreamFilters([]byte(shadow), sp(shadow)); got != nil {
+		t.Errorf("/FilterFoo shadowed /Filter, got %v", got)
 	}
 }
 

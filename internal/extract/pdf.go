@@ -45,6 +45,7 @@ var (
 	pdfNameJBIG2        = []byte("/JBIG2Decode")
 	pdfNameObjStm       = []byte("/ObjStm")
 	pdfNameLength       = []byte("/Length")
+	pdfNameFilter       = []byte("/Filter")
 )
 
 const (
@@ -133,9 +134,65 @@ func fromPDF(buf []byte, res *Result, deadline time.Time) {
 		}
 
 		attempts++
-		dec := inflatePDFStream(body)
-		if len(dec) == 0 {
-			continue // not a deflate stream (e.g. raw image) — raw scan covers it
+		// Decode any leading ASCII85/ASCIIHex text-armour prefilters (AUDIT-PDF-
+		// FILTER-CHAIN) so a `/Filter [/ASCII85Decode /FlateDecode]` chain (ASCII85
+		// text wrapping deflate) is unwrapped. /Filter is treated as ADVISORY, not
+		// authoritative: it can be a decoy picked from a string/comment by the
+		// context-blind dict scan, so the un-armouring below is also retried
+		// opportunistically — a bogus /Filter can neither disable extraction of a
+		// real deflate stream nor hide a real armoured one.
+		decoded, surface, _ := applyPDFPrefilters(body, pdfStreamFilters(scan, kwAt))
+		var dec []byte
+		if surface {
+			// The /Filter chain parsed as text-prefilters-only, so decoded SHOULD be
+			// cleartext — but a mis-parsed /Filter (a decoy in an unbalanced string, an
+			// obj-misclip) could have dropped a trailing FlateDecode, leaving decoded
+			// still zlib-compressed. zlib inflation is header+adler32-validated, so it
+			// succeeds ONLY on genuinely-compressed data and never on cleartext: use it
+			// when it works (self-correcting the mis-parse), else surface the cleartext.
+			if x := zlibInflatePDF(decoded); len(x) > 0 {
+				dec = x
+			} else {
+				dec = decoded
+				if len(dec) > maxBytesPerPDFStream {
+					dec = dec[:maxBytesPerPDFStream]
+				}
+				// A prefilter-only /Filter that actually wraps RAW deflate (the dict
+				// dropped a trailing /FlateDecode, or used the headerless variant) leaves
+				// `decoded` still compressed but past zlib's header/adler32 validation, so
+				// the cleartext surfaced above is really deflate bytes — YARA would see
+				// garbage (an evasion). Raw deflate has no checksum, so an inflate of
+				// genuine cleartext often yields junk; we therefore do NOT replace `dec`
+				// with it (that would corrupt the common cleartext case) but emit it as an
+				// ADDITIONAL stream so a real raw-deflate payload is still surfaced.
+				if x := rawInflatePDF(decoded); len(x) > 0 && !bytes.Equal(x, dec) &&
+					len(res.Streams) < maxStreams && total+len(x) < maxTotalPDF {
+					res.Streams = append(res.Streams, x)
+					total += len(x)
+				}
+			}
+		} else {
+			// Terminal FlateDecode / unknown / no-/Filter: inflate the (prefiltered)
+			// body; fall back to the raw body (decoy /Filter armoured a real deflate),
+			// then to an opportunistic un-armour (decoy /Filter hid a real armoured
+			// deflate). All bounded — at most a few inflate attempts.
+			dec = inflatePDFStream(decoded)
+			if len(dec) == 0 {
+				dec = inflatePDFStream(body)
+			}
+			if len(dec) == 0 {
+				for _, d := range [][]byte{decodeASCII85PDF(body), decodeASCIIHexPDF(body)} {
+					if len(d) > 0 {
+						if x := inflatePDFStream(d); len(x) > 0 {
+							dec = x
+							break
+						}
+					}
+				}
+			}
+			if len(dec) == 0 {
+				continue // not deflate / not armoured-deflate — raw scan covers it
+			}
 		}
 		res.Streams = append(res.Streams, dec)
 		total += len(dec)
@@ -507,6 +564,35 @@ func inflatePDFStream(body []byte) []byte {
 		if out := readInflated(zr); len(out) > 0 {
 			return out
 		}
+	}
+	fr := flate.NewReader(bytes.NewReader(body))
+	return readInflated(fr)
+}
+
+// zlibInflatePDF inflates body as a zlib stream ONLY (no raw-deflate fallback).
+// zlib validates a 2-byte header and a trailing adler32 checksum, so this returns
+// output only for genuinely zlib-compressed data and effectively never for
+// cleartext — used to tell a still-compressed body apart from real cleartext when
+// a /Filter chain mis-parsed. Bounded by maxBytesPerPDFStream.
+func zlibInflatePDF(body []byte) []byte {
+	if len(body) < 2 {
+		return nil
+	}
+	zr, err := zlib.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	return readInflated(zr)
+}
+
+// rawInflatePDF inflates body as RAW deflate ONLY (no zlib header/checksum). Used
+// to recover a raw-deflate payload that a prefilter-only /Filter chain left after
+// text-unarmouring (the dict omitted the trailing /FlateDecode). Raw deflate is
+// unchecksummed, so this can yield junk from genuine cleartext — the caller emits
+// the result as an ADDITIONAL stream, never as a replacement. Bounded.
+func rawInflatePDF(body []byte) []byte {
+	if len(body) < 2 {
+		return nil
 	}
 	fr := flate.NewReader(bytes.NewReader(body))
 	return readInflated(fr)
