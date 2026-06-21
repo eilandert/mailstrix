@@ -388,9 +388,45 @@ func fromEncoded(buf []byte, res *Result, deadline time.Time) {
 	sources = append(sources, res.Streams...)
 
 	total := 0
+	// MSD-4 budget: the ingest-time defang emits one extra stream per source
+	// outside decodeSourceTree's own per-source budget, so it needs its own caps
+	// — otherwise N defanged sources × up to 1 MiB each would bypass the
+	// maxDecodedBlobs / maxCumulativeDecoded ceilings (a memory amplifier on
+	// crafted multi-stream input). These run across the WHOLE fromEncoded pass.
+	var defangBlobs, defangCum int
 	for _, src := range sources {
 		if expired(deadline) || len(res.Streams) >= maxStreams {
 			break
+		}
+		// MSD-4: defang pass — reverse IOC-evasion markers (hxxp, [.], [at], …)
+		// in each source ONCE before the decode tree so URL/keyword rules see the
+		// real on-wire form.  Gate on mostlyText: defanging binary blobs is noise.
+		// Emit only when something actually changed (undefang returns ok=false on
+		// no-op, so we never emit an unchanged dup).  Then, if the un-defanged
+		// copy itself looksEncoded (e.g. the payload behind the defang was base64),
+		// feed it through decodeSourceTree too — but ONLY then, to avoid an
+		// un-gated amplifier on plain cleartext URLs.
+		if mostlyText(src) {
+			if ud, ok := undefang(src); ok && len(ud) >= minDecodedLen {
+				if len(ud) > maxBytesPerDecodedBlob {
+					ud = ud[:maxBytesPerDecodedBlob]
+				}
+				// Respect the same blob/byte/stream budgets decodeSourceTree uses,
+				// so the defang path can't bypass maxDecodedBlobs/maxCumulativeDecoded.
+				if defangBlobs < maxDecodedBlobs && defangCum+len(ud) <= maxCumulativeDecoded &&
+					len(res.Streams) < maxStreams {
+					res.Streams = append(res.Streams, ud)
+					defangBlobs++
+					defangCum += len(ud)
+					total++
+					// Only re-decode the un-defanged copy when it still looksEncoded
+					// (a defanged-then-base64 payload); a plain cleartext URL is
+					// emitted above but NOT re-fed, to avoid an un-gated amplifier.
+					if looksEncoded(ud) {
+						total += decodeSourceTree(ud, res, deadline)
+					}
+				}
+			}
 		}
 		total += decodeSourceTree(src, res, deadline)
 	}
