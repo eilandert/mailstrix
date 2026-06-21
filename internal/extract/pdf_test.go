@@ -514,23 +514,77 @@ func TestPDFStreamLength(t *testing.T) {
 	streamPos := func(b string) int { return bytes.Index([]byte(b), []byte("stream")) }
 
 	direct := "1 0 obj\n<< /Type /X /Length 42 >>\nstream\n"
-	if got := pdfStreamLength([]byte(direct), streamPos(direct)); got != 42 {
+	if got := pdfStreamLength([]byte(direct), streamPos(direct), nil); got != 42 {
 		t.Errorf("direct /Length: got %d, want 42", got)
 	}
-	// Indirect `/Length 9 0 R` — unresolvable, must be -1.
+	// Indirect `/Length 9 0 R` with no resolver — unresolvable, must be -1.
 	indirect := "2 0 obj\n<< /Length 9 0 R >>\nstream\n"
-	if got := pdfStreamLength([]byte(indirect), streamPos(indirect)); got != -1 {
-		t.Errorf("indirect /Length: got %d, want -1", got)
+	if got := pdfStreamLength([]byte(indirect), streamPos(indirect), nil); got != -1 {
+		t.Errorf("indirect /Length (nil map): got %d, want -1", got)
 	}
-	// Indirect split by a comment `/Length 9 %c\n0 R` — still -1 (comment is ws).
+	// Same indirect ref WITH a resolver map → resolved to the object's value.
+	if got := pdfStreamLength([]byte(indirect), streamPos(indirect), map[int]int{9: 1234}); got != 1234 {
+		t.Errorf("indirect /Length resolved: got %d, want 1234", got)
+	}
+	// Resolver MISS (obj not in map) → -1 (safe fallback).
+	if got := pdfStreamLength([]byte(indirect), streamPos(indirect), map[int]int{7: 99}); got != -1 {
+		t.Errorf("indirect /Length miss: got %d, want -1", got)
+	}
+	// Indirect split by a comment `/Length 9 %c\n0 R` — resolver still applies.
 	commented := "3 0 obj\n<< /Length 9 %c\n0 R >>\nstream\n"
-	if got := pdfStreamLength([]byte(commented), streamPos(commented)); got != -1 {
-		t.Errorf("comment-split indirect /Length: got %d, want -1", got)
+	if got := pdfStreamLength([]byte(commented), streamPos(commented), nil); got != -1 {
+		t.Errorf("comment-split indirect /Length (nil map): got %d, want -1", got)
+	}
+	if got := pdfStreamLength([]byte(commented), streamPos(commented), map[int]int{9: 7}); got != 7 {
+		t.Errorf("comment-split indirect /Length resolved: got %d, want 7", got)
 	}
 	// /Length only in a PRIOR object; this stream's object has none → -1.
 	stale := "1 0 obj\n<< /Length 5 >>\nendobj\n2 0 obj\n<< /Type /X >>\nstream\n"
-	if got := pdfStreamLength([]byte(stale), strings.LastIndex(stale, "stream")); got != -1 {
+	if got := pdfStreamLength([]byte(stale), strings.LastIndex(stale, "stream"), nil); got != -1 {
 		t.Errorf("prior-object /Length leaked: got %d, want -1", got)
+	}
+}
+
+// pdfIndirectLengths must map only bare-integer `N G obj <int> endobj` objects,
+// ignore non-integer objects, and feed the end-to-end indirect-/Length carve.
+func TestPDFIndirectLengths(t *testing.T) {
+	doc := "%PDF-1.7\n" +
+		"9 0 obj 1234 endobj\n" + // a length object
+		"10 0 obj << /Type /Catalog >> endobj\n" + // not an integer → ignored
+		"11 0 obj\n  56\nendobj\n" // whitespace-padded integer
+	m := pdfIndirectLengths([]byte(doc))
+	if m[9] != 1234 {
+		t.Errorf("obj 9: got %d, want 1234", m[9])
+	}
+	if m[11] != 56 {
+		t.Errorf("obj 11: got %d, want 56", m[11])
+	}
+	if _, ok := m[10]; ok {
+		t.Errorf("obj 10 (dict) should not be recorded as a length")
+	}
+}
+
+// AUDIT-PDF-ENDSTREAM closure: a FlateDecode body whose stored-deflate bytes
+// contain a literal `endstream`, sized by an INDIRECT `/Length N G R`, must be
+// carved in full (resolved via the length object), not truncated at the embedded
+// `endstream`. This was the documented residual of the direct-/Length fix.
+func TestExtractPDFEndstreamInBodyIndirectLength(t *testing.T) {
+	payload := []byte("app.alert('IND_HEAD'); /* endstream */ this.exportDataObject('IND_TAIL_KEYWORD')")
+	comp := zlibStore(payload)
+	if !bytes.Contains(comp, []byte("endstream")) {
+		t.Fatalf("test setup: stored-deflate body does not contain a literal 'endstream'")
+	}
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.7\n")
+	buf.WriteString("1 0 obj\n<< /Length 2 0 R >>\nstream\n")
+	buf.Write(comp)
+	buf.WriteString("\nendstream\nendobj\n")
+	buf.WriteString("2 0 obj " + strconv.Itoa(len(comp)) + " endobj\n")
+	buf.WriteString("%%EOF")
+
+	res := Extract(buf.Bytes(), time.Time{})
+	if !streamsContain(res, "IND_TAIL_KEYWORD") {
+		t.Errorf("indirect-/Length body truncated at embedded 'endstream'; streams=%v", res.Streams)
 	}
 }
 

@@ -29,6 +29,8 @@ var (
 	pdfMagic     = []byte("%PDF-")
 	pdfStreamKW  = []byte("stream")
 	pdfEndStream = []byte("endstream")
+	pdfObjKW     = []byte("obj")
+	pdfEndObjKW  = []byte("endobj")
 )
 
 // PDF dropper indicator names (pdfid keyword set, mail-relevant high-risk
@@ -84,6 +86,9 @@ func fromPDF(buf []byte, res *Result, deadline time.Time) {
 	}
 	var total, attempts int
 	pos := 0
+	// Pre-scan the bare-integer length objects so an indirect `/Length N G R`
+	// resolves without an xref (AUDIT-PDF-ENDSTREAM); nil when none exist.
+	lengths := pdfIndirectLengths(scan)
 	// Cap inflate ATTEMPTS, not just emitted streams: a hostile PDF stuffed with
 	// many non-deflate `stream … endstream` bodies would otherwise force unbounded
 	// zlib/flate attempts (none of which increment len(res.Streams)). The deadline
@@ -116,7 +121,7 @@ func fromPDF(buf []byte, res *Result, deadline time.Time) {
 		// align — the narrowed residual.
 		var body []byte
 		sized := false
-		if l := pdfStreamLength(scan, kwAt); l >= 0 && bodyStart+l <= len(scan) {
+		if l := pdfStreamLength(scan, kwAt, lengths); l >= 0 && bodyStart+l <= len(scan) {
 			after := bytes.TrimLeft(scan[bodyStart+l:], " \t\r\n\f")
 			if bytes.HasPrefix(after, pdfEndStream) {
 				body = scan[bodyStart : bodyStart+l]
@@ -314,6 +319,7 @@ func scrubPDFForNames(scan []byte) ([]byte, int) {
 	count := 0
 	n := len(scan)
 	i := 0
+	lengths := pdfIndirectLengths(scan)
 	for i < n {
 		c := scan[i]
 		switch {
@@ -376,7 +382,7 @@ func scrubPDFForNames(scan []byte) ([]byte, int) {
 			// /Length is indirect/absent).
 			bodyStart := skipPDFEOL(scan, i+len(pdfStreamKW))
 			stop := -1
-			if l := pdfStreamLength(scan, i); l >= 0 && bodyStart+l <= n {
+			if l := pdfStreamLength(scan, i, lengths); l >= 0 && bodyStart+l <= n {
 				after := bytes.TrimLeft(scan[bodyStart+l:], " \t\r\n\f")
 				if bytes.HasPrefix(after, pdfEndStream) {
 					stop = (bodyStart + l) + (len(scan[bodyStart+l:]) - len(after)) + len(pdfEndStream)
@@ -425,13 +431,117 @@ func scrubPDFForNames(scan []byte) ([]byte, int) {
 	return out, count
 }
 
+// maxPDFLengthObjs caps how many `N G obj <int> endobj` length objects
+// pdfIndirectLengths records, bounding the one-pass scan on a hostile PDF.
+const maxPDFLengthObjs = 4096
+
+// pdfIndirectLengths builds a map objNum -> direct-integer value for every
+// numeric object of the common form `N G obj <int> endobj` (the shape a /Length
+// indirect reference points at). It lets pdfStreamLength resolve a `/Length N G R`
+// reference without an xref table (AUDIT-PDF-ENDSTREAM): the residual was that an
+// indirect /Length fell back to the first-`endstream` substring, truncating a
+// FlateDecode body whose compressed bytes happen to contain `endstream`. Only
+// bare-integer length objects are recorded — a length is always a direct integer,
+// so this is sufficient and can't be steered by string/dict content. Bounded by
+// maxPDFLengthObjs and a single linear pass; returns nil when none are present.
+func pdfIndirectLengths(b []byte) map[int]int {
+	var m map[int]int
+	n := len(b)
+	pos := 0
+	for len(m) < maxPDFLengthObjs {
+		rel := bytes.Index(b[pos:], pdfObjKW)
+		if rel < 0 {
+			break
+		}
+		at := pos + rel
+		pos = at + len(pdfObjKW)
+		// `obj` must be a real keyword: preceded by whitespace and followed by
+		// whitespace/EOL, else it's a substring of `endobj`/`globj`/etc.
+		if at == 0 || !isPDFWS(b[at-1]) {
+			continue
+		}
+		if pos < n && !isPDFWS(b[pos]) {
+			continue
+		}
+		// Parse the object number `N` and generation `G` immediately before `obj`.
+		num, ok := pdfTrailingObjNum(b, at)
+		if !ok {
+			continue
+		}
+		// The value must be a bare integer directly followed (mod whitespace) by
+		// `endobj` — anything else (a dict, array, string) isn't a length object.
+		j := skipPDFWS(b, pos)
+		start := j
+		val := 0
+		for j < n && b[j] >= '0' && b[j] <= '9' {
+			val = val*10 + int(b[j]-'0')
+			if val > maxPDFScan {
+				val = -1
+				break
+			}
+			j++
+		}
+		if j == start || val < 0 {
+			continue
+		}
+		if k := skipPDFWS(b, j); !bytes.HasPrefix(b[k:], pdfEndObjKW) {
+			continue
+		}
+		if m == nil {
+			m = make(map[int]int)
+		}
+		if _, seen := m[num]; !seen { // first definition wins; ignore redefinitions
+			m[num] = val
+		}
+	}
+	return m
+}
+
+// pdfTrailingObjNum parses the `N G` (object number, generation) integers that
+// precede the `obj` keyword at objAt, returning the object number. It scans
+// backward over `G`, whitespace, then `N`. Bounded; fail-safe (ok=false on any
+// malformed shape).
+func pdfTrailingObjNum(b []byte, objAt int) (int, bool) {
+	i := objAt - 1
+	for i >= 0 && isPDFWS(b[i]) { // gap before `obj`
+		i--
+	}
+	// generation digits
+	genEnd := i
+	for i >= 0 && b[i] >= '0' && b[i] <= '9' {
+		i--
+	}
+	if i == genEnd { // no generation digits
+		return 0, false
+	}
+	for i >= 0 && isPDFWS(b[i]) { // gap between N and G
+		i--
+	}
+	numEnd := i
+	for i >= 0 && b[i] >= '0' && b[i] <= '9' {
+		i--
+	}
+	if i == numEnd { // no object-number digits
+		return 0, false
+	}
+	num := 0
+	for j := i + 1; j <= numEnd; j++ {
+		num = num*10 + int(b[j]-'0')
+		if num > maxPDFScan {
+			return 0, false
+		}
+	}
+	return num, true
+}
+
 // pdfStreamLength returns the direct-integer /Length for the stream whose
 // `stream` keyword is at streamPos, by searching a bounded window of the bytes
 // just before it (the stream's own dictionary). Looking it up per stream — rather
 // than carrying state forward — means a /Length from an earlier object can never
-// be mis-applied to a later stream. Returns -1 when none is found nearby or it is
-// an indirect reference.
-func pdfStreamLength(b []byte, streamPos int) int {
+// be mis-applied to a later stream. An indirect `/Length N G R` is resolved
+// against lengths (built by pdfIndirectLengths) when supplied; lengths may be nil.
+// Returns -1 when none is found nearby, or the indirect ref is unresolvable.
+func pdfStreamLength(b []byte, streamPos int, lengths map[int]int) int {
 	const window = 512 // a stream dict is small; bound the backward scan
 	lo := streamPos - window
 	if lo < 0 {
@@ -455,16 +565,18 @@ func pdfStreamLength(b []byte, streamPos int) int {
 	if after < streamPos && !isPDFNameTerminator(b[after]) {
 		return -1
 	}
-	return readPDFLength(b, after)
+	return readPDFLength(b, after, lengths)
 }
 
 // readPDFLength parses a stream's /Length value starting at j (just past the
 // "/Length" name). It returns the direct integer, or -1 when the value is absent
-// or an indirect reference (`N G R`) — which can't be resolved without the xref,
-// so the caller falls back to the `endstream` substring. Whitespace skipping is
+// or an indirect reference (`N G R`) that can't be resolved. An indirect ref is
+// resolved against lengths (the objNum->value map from pdfIndirectLengths) when
+// supplied (AUDIT-PDF-ENDSTREAM); on a miss, or when lengths is nil, it returns -1
+// and the caller falls back to the `endstream` substring. Whitespace skipping is
 // comment-aware (a `%…` comment is whitespace in PDF), so an indirect length
 // split by a comment is still recognised. Bounded; reads only a short digit run.
-func readPDFLength(b []byte, j int) int {
+func readPDFLength(b []byte, j int, lengths map[int]int) int {
 	n := len(b)
 	j = skipPDFWS(b, j)
 	start := j
@@ -487,10 +599,26 @@ func readPDFLength(b []byte, j int) int {
 		}
 		k = skipPDFWS(b, k)
 		if k < n && b[k] == 'R' {
-			return -1 // indirect /Length — unresolvable here
+			// Indirect /Length: resolve `val` (the object number) against the
+			// pre-scanned length objects. Miss / nil map → fall back (-1).
+			if lengths != nil {
+				if rv, ok := lengths[val]; ok {
+					return rv
+				}
+			}
+			return -1
 		}
 	}
 	return val
+}
+
+// isPDFWS reports whether c is a PDF whitespace byte (PDF 7.2.2).
+func isPDFWS(c byte) bool {
+	switch c {
+	case ' ', '\t', '\r', '\n', '\f', 0:
+		return true
+	}
+	return false
 }
 
 // skipPDFWS advances past PDF whitespace AND comments (`%` to end of line), which
