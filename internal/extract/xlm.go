@@ -38,6 +38,10 @@ const (
 	maxBytesWorkbookXML = 2 << 20
 	// maxXLMMarkers caps synthetic XLM-HIDDEN-MACROSHEET streams per document.
 	maxXLMMarkers = 64
+	// maxBIFFRecords caps total BIFF records walked per Workbook stream (XLM-3).
+	// A macrosheet substream is dominated by FORMULA records, so the per-sheet
+	// cap (maxXLMSheets) does not bound the walk; this does.
+	maxBIFFRecords = 1 << 18
 )
 
 // xlmHiddenStateLabel maps BIFF hidden-state bit values (grbit byte 0, bits 0–1)
@@ -176,6 +180,9 @@ func fromBIFFXLM(ole *oleparse.OLEFile, res *Result, deadline time.Time) {
 
 	r := bytes.NewReader(workbookData)
 	scanned := 0
+	records := 0
+	inMacroSheet := false // set by BOF; gates FORMULA folding to macro substreams
+	xlmOutput := 0        // folded-formula byte budget (XLM-3), separate from markers
 	for {
 		if expired(deadline) {
 			break
@@ -183,6 +190,13 @@ func fromBIFFXLM(ole *oleparse.OLEFile, res *Result, deadline time.Time) {
 		if scanned >= maxXLMSheets {
 			break
 		}
+		// A workbook stream is overwhelmingly FORMULA records, not BOUNDSHEETs,
+		// so the per-sheet cap above does not bound the loop on a hostile file —
+		// cap the total record count too.
+		if records >= maxBIFFRecords {
+			break
+		}
+		records++
 		if countXLMMarkers(res.Streams) >= maxXLMMarkers || len(res.Streams) >= maxStreams {
 			break
 		}
@@ -196,8 +210,54 @@ func fromBIFFXLM(ole *oleparse.OLEFile, res *Result, deadline time.Time) {
 			break
 		}
 
+		// BOF (0x0809): substream boundary. Its dt field (offset 2) tells us
+		// whether the following records belong to an Excel-4.0 MACROSHEET
+		// substream (dt 0x0040) — only then do we fold its FORMULA cells, so
+		// ordinary worksheet formulas (=SUM(...)) can't fabricate folded streams.
+		if recType == 0x0809 {
+			inMacroSheet = false
+			if recLen >= 4 {
+				payload := make([]byte, recLen)
+				if _, err := io.ReadFull(r, payload); err != nil {
+					break
+				}
+				dt := binary.LittleEndian.Uint16(payload[2:])
+				inMacroSheet = dt == 0x0040
+			} else if _, err := r.Seek(int64(recLen), io.SeekCurrent); err != nil {
+				break
+			}
+			continue
+		}
+
+		// FORMULA (0x0006): when inside a macrosheet substream, fold its ptg
+		// token stream (XLM-3). Payload layout: row(2) col(2) ixfe(2) result(8)
+		// grbit(2) chn(4) cce(2) rgce[cce] — the ptg bytes start at offset 22,
+		// length cce (uint16 at offset 20).
+		if recType == 0x0006 {
+			if !inMacroSheet || recLen < 22 {
+				if _, err := r.Seek(int64(recLen), io.SeekCurrent); err != nil {
+					break
+				}
+				continue
+			}
+			payload := make([]byte, recLen)
+			if _, err := io.ReadFull(r, payload); err != nil {
+				break
+			}
+			cce := int(binary.LittleEndian.Uint16(payload[20:]))
+			rgce := payload[22:]
+			if cce > len(rgce) {
+				cce = len(rgce) // clamp to available bytes (truncated record)
+			}
+			folded := parseBIFF8Formula(rgce[:cce])
+			// Feed the shared OOXML sink so .xls and .xlsm can't drift on the
+			// minlen floor, the output cap, or dangerous-func marker emission.
+			emitFoldedFormula(folded, &res.Streams, &xlmOutput, true)
+			continue
+		}
+
 		if recType != 0x0085 {
-			// Not BOUNDSHEET8 — skip the payload.
+			// Not a record we handle — skip the payload.
 			if _, err := r.Seek(int64(recLen), io.SeekCurrent); err != nil {
 				break
 			}

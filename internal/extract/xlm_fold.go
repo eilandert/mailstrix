@@ -9,10 +9,10 @@ package extract
 // Two container forms:
 //   - OOXML (.xlsm): fromOOXMLXLMFold reads xl/macrosheets/sheet*.xml,
 //     parses <f> formula elements, folds them, and emits results.
-//   - BIFF8 (.xls): skipped — BIFF8 formula token parsing (ptg opcodes) is
-//     substantially more complex than OOXML text formulas, and the OOXML path
-//     covers .xlsm which is the dominant modern XLM vector. TODO: add BIFF8
-//     folding if real-world samples demand it.
+//   - BIFF8 (.xls): fromBIFFXLM (xlm.go) walks the Workbook stream's BIFF
+//     records; inside a macrosheet substream (BOF dt 0x0040) it folds each
+//     FORMULA (0x06) cell's ptg token stream via parseBIFF8Formula (biff_ptg.go)
+//     and feeds the SAME emitFoldedFormula sink as the OOXML path (XLM-3).
 //
 // Fail-open: any parse error silently returns with no streams emitted.
 

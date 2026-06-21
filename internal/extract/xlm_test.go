@@ -206,6 +206,74 @@ func TestXLMBIFF_VisibleMacroNoMarker(t *testing.T) {
 	}
 }
 
+// buildBIFFFormulaWorkbook constructs a Workbook stream containing a BOF record
+// of the given substream type (dt) followed by a single FORMULA (0x06) record
+// whose ptg rgce is the supplied token bytes, wrapped in a CFB. Used to exercise
+// the XLM-3 BIFF8 formula-folding path. dt 0x0040 = macrosheet, 0x0010 = worksheet.
+func buildBIFFFormulaWorkbook(t *testing.T, dt uint16, rgce []byte) []byte {
+	t.Helper()
+	var wb bytes.Buffer
+	put16 := func(v uint16) { b := make([]byte, 2); binary.LittleEndian.PutUint16(b, v); wb.Write(b) }
+	rec := func(typ uint16, payload []byte) {
+		put16(typ)
+		put16(uint16(len(payload)))
+		wb.Write(payload)
+	}
+
+	// BOF: vers(2) + dt(2) (+ padding tolerated; we emit exactly 4).
+	bof := make([]byte, 4)
+	binary.LittleEndian.PutUint16(bof[2:], dt)
+	rec(0x0809, bof)
+
+	// FORMULA: row(2) col(2) ixfe(2) result(8) grbit(2) chn(4) cce(2) rgce[cce].
+	fp := make([]byte, 22+len(rgce))
+	binary.LittleEndian.PutUint16(fp[20:], uint16(len(rgce))) // cce
+	copy(fp[22:], rgce)
+	rec(0x0006, fp)
+
+	return buildCFB(t, []cfbEntry{
+		{name: "Root Entry", mse: 5},
+		{name: "Workbook", mse: 2, data: wb.Bytes()},
+	})
+}
+
+// ptgStr8 / ptgFuncTok mirror the BIFF8 ptg builders in biff_ptg_test.go; we
+// rebuild small inline streams here to keep the xlm_test fixtures self-contained.
+func biffStr8(s string) []byte { return append([]byte{0x17, byte(len(s)), 0x00}, []byte(s)...) }
+
+// TestXLMBIFF_FormulaFoldsInMacrosheet checks that a FORMULA ptg stream inside a
+// macrosheet substream (BOF dt 0x0040) is folded and surfaced, and that a
+// dangerous-func wrapper emits the XLM-DANGEROUS-FUNC marker (XLM-3).
+func TestXLMBIFF_FormulaFoldsInMacrosheet(t *testing.T) {
+	// ptg: push "calc.exe payload", then ptgFunc EXEC (id 110) → =EXEC(calc.exe payload).
+	rgce := append(biffStr8("calc.exe payload"), 0x21, 110, 0) // ptgFunc EXEC
+	buf := buildBIFFFormulaWorkbook(t, 0x0040, rgce)
+	res := Extract(buf, time.Time{})
+	joined := bytes.Join(res.Streams, []byte("\n"))
+	if !bytes.Contains(joined, []byte("calc.exe payload")) {
+		t.Fatalf("macrosheet FORMULA not folded; streams=%d joined=%q", len(res.Streams), joined)
+	}
+	if !bytes.Contains(joined, []byte("XLM-DANGEROUS-FUNC EXEC")) {
+		t.Fatalf("expected XLM-DANGEROUS-FUNC EXEC; got %q", joined)
+	}
+}
+
+// TestXLMBIFF_FormulaNotFoldedInWorksheet checks the FP gate: a FORMULA in an
+// ordinary worksheet substream (BOF dt 0x0010) must NOT be folded/surfaced, so
+// benign worksheet formulas can't fabricate streams.
+func TestXLMBIFF_FormulaNotFoldedInWorksheet(t *testing.T) {
+	rgce := append(biffStr8("benign worksheet text"), 0x21, 110, 0)
+	buf := buildBIFFFormulaWorkbook(t, 0x0010, rgce)
+	res := Extract(buf, time.Time{})
+	joined := bytes.Join(res.Streams, []byte("\n"))
+	if bytes.Contains(joined, []byte("benign worksheet text")) {
+		t.Fatalf("worksheet FORMULA wrongly folded; got %q", joined)
+	}
+	if bytes.Contains(joined, []byte("XLM-DANGEROUS-FUNC")) {
+		t.Fatalf("worksheet FORMULA wrongly emitted dangerous marker; got %q", joined)
+	}
+}
+
 // TestXLMDeadline checks that an already-expired deadline causes fromBIFFXLM
 // and fromOOXMLXLM to return immediately with nothing emitted.
 func TestXLMDeadline(t *testing.T) {
