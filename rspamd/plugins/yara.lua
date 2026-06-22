@@ -84,6 +84,26 @@ local settings = {
   -- with dozens of parts can't fan out unbounded into yarad. Identical parts
   -- (same attachment twice) are also deduped by their digest before this cap.
   max_jobs = 32,
+  -- Per-request effort tier (EFFORT-3). When enabled, the plugin sets the
+  -- X-YARAD-Effort header from this message's signals so yarad spends deeper
+  -- (slower, more decode passes) on suspicious senders and stays shallow/cheap on
+  -- trusted ones. yarad clamps the header to its YARAD_EFFORT_MAX, so this can
+  -- only ever LOWER effort below the operator's ceiling, never raise it past the
+  -- DoS bound. Disabled by default (no header sent → yarad uses its own
+  -- env/auto default, today's behaviour).
+  effort_enabled = false,
+  effort_max = 10,           -- the dial's top (mirror yarad's YARAD_EFFORT_MAX)
+  effort_min = 1,            -- floor for the most-trusted senders
+  -- Prior rspamd metric score → effort. At/below effort_score_low the sender
+  -- looks clean (→ effort_min); at/above effort_score_high it looks bad
+  -- (→ effort_max); linear in between. A negative score (whitelisted/authed)
+  -- stays at effort_min.
+  effort_score_low  = 0.0,
+  effort_score_high = 8.0,
+  -- Symbols that, if already present on the message, force full effort
+  -- regardless of score (e.g. SPF/DKIM failures, known bad-sender lists). The
+  -- max over score-derived and symbol-forced effort wins.
+  effort_force_symbols = { "R_SPF_FAIL", "R_SPF_SOFTFAIL", "DMARC_POLICY_REJECT", "R_DKIM_REJECT" },
 }
 
 -- post sends buf to yarad and invokes cb(matches) with the decoded rule list
@@ -91,7 +111,45 @@ local settings = {
 -- a scanner problem must never block mail. fname (optional) is the attachment
 -- filename; it is passed to yarad so the YARA filename/extension external vars
 -- get set and name-keyed rules (THOR/Loki) fire.
-local function post(task, buf, what, fname, cb)
+-- compute_effort derives the X-YARAD-Effort value (1..effort_max) for this
+-- message, or nil when the feature is disabled (so no header is sent and yarad
+-- falls back to its own default/auto). Cheap, signal-driven: clean/trusted
+-- senders get the minimum, suspicious ones the maximum. Computed once per
+-- message (not per part) — the sender's reputation is a message property.
+local function compute_effort(task)
+  if not settings.effort_enabled then return nil end
+  local lo, hi = settings.effort_min, settings.effort_max
+  if hi < lo then hi = lo end
+
+  -- Score-derived level: map the prior metric score onto [lo, hi].
+  local level = lo
+  local score = nil
+  local ok, res = pcall(function() return task:get_metric_score("default") end)
+  if ok then
+    if type(res) == "table" then res = res[1] end -- some bindings return {score, required}
+    score = tonumber(res)
+  end
+  if score then
+    local slo, shi = settings.effort_score_low, settings.effort_score_high
+    if shi > slo then
+      local frac = (score - slo) / (shi - slo)
+      if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+      level = lo + math.floor(frac * (hi - lo) + 0.5)
+    elseif score >= shi then
+      level = hi
+    end
+  end
+
+  -- A forcing symbol (auth failure etc.) pins to full effort.
+  for _, sym in ipairs(settings.effort_force_symbols or {}) do
+    if task:has_symbol(sym) then level = hi break end
+  end
+
+  if level < lo then level = lo elseif level > hi then level = hi end
+  return level
+end
+
+local function post(task, buf, what, fname, effort, cb)
   local function http_cb(err, code, body)
     if err then
       rspamd_logger.errx(task, "yarad request failed (%s): %s", what, err)
@@ -124,6 +182,12 @@ local function post(task, buf, what, fname, cb)
   -- an HTTP header. yarad decodes it and sets the YARA filename/extension vars.
   if fname and fname ~= "" then
     headers["X-YARAD-Filename"] = rspamd_util.encode_base64(fname)
+  end
+  -- Per-request effort tier (EFFORT-3). Integer only; yarad clamps it to its
+  -- configured ceiling, so a stale/oversized value can never raise effort past
+  -- the DoS bound. nil → no header → yarad uses its own default.
+  if effort then
+    headers["X-YARAD-Effort"] = tostring(effort)
   end
 
   -- rspamd_http.request returns false when it could not even schedule the
@@ -271,8 +335,12 @@ local function check_cb(task)
     end
   end
 
+  -- Effort tier is a per-message (sender) property: compute once, send on every
+  -- per-part /scan for this message.
+  local effort = compute_effort(task)
+
   for _, job in ipairs(jobs) do
-    post(task, job.buf, job.what, job.fname, function(matches)
+    post(task, job.buf, job.what, job.fname, effort, function(matches)
       for _, m in ipairs(matches) do
         if m.rule then
           if m.rule:sub(1, 8) == "URLHAUS_" then
@@ -372,6 +440,20 @@ for _, s in ipairs({
   settings.allow_symbol,
 }) do
   rspamd_config:register_symbol({ name = s, type = "virtual", parent = id })
+end
+
+-- EFFORT-3: when the per-request effort tier is enabled it reads the message's
+-- prior metric score and auth-failure symbols (compute_effort). The callback has
+-- no inherent ordering, so without an explicit dependency YARA can run before
+-- SPF/DKIM/DMARC and see a partial score / missing force symbol. Register the
+-- callback as depending on each force symbol so those filters run first. (The
+-- metric score is still best-effort — get_metric_score reflects whatever has run
+-- — but the auth-failure pins, the strongest signal, are now reliable.) Only
+-- wired when enabled, so the default-off path adds no scheduling constraint.
+if settings.effort_enabled then
+  for _, s in ipairs(settings.effort_force_symbols or {}) do
+    rspamd_config:register_dependency(id, s)
+  end
 end
 
 rspamd_logger.infox(rspamd_config, "%s: registered, backend=%s scan_message=%s scan_parts=%s urlhaus_symbol=%s",
