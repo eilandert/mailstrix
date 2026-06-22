@@ -1,8 +1,8 @@
 // MSD-6 synthetic worst-case / invariant / soak tests.
 //
-// MSD-6 differential-corpus half (real Dridex samples + expected-IOC asserts)
-// is NOT here — needs real samples (see TODO.md). This file covers the
-// synthetic worst-case/invariant/soak half only.
+// MSD-6 differential-corpus half (named-IOC, multi-layer carriers + expected-IOC
+// asserts) lives in decode_differential_test.go. This file covers the synthetic
+// worst-case/invariant/soak half only.
 package extract
 
 import (
