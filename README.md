@@ -235,7 +235,7 @@ Every setting is an env var and a `serve` CLI flag (flag > env > default).
 | `YARAD_MAX_INFLIGHT` | `auto` (2× concurrent) | max in-flight requests (admission gate); kept above the scan gate so a slow body/Redis can't starve scans |
 | `YARAD_MAX_BODY` | `8388608` (8 MiB) | max request body, in bytes (checked before reading) |
 | `YARAD_EFFORT_MAX` | `10` | effort-tier ceiling (1–10); the hard cap a per-request `X-YARAD-Effort` header can never exceed (DoS guard) |
-| `YARAD_EFFORT` | `= YARAD_EFFORT_MAX` | default effort level when no `X-YARAD-Effort` header is sent (1 = raw + shallowest extraction, max = full depth). *Plumbing landed (EFFORT-1); caps wire to it in EFFORT-4 — until then all levels behave identically.* |
+| `YARAD_EFFORT` | `= YARAD_EFFORT_MAX` | default effort level when no `X-YARAD-Effort` header is sent (1 = raw + shallowest extraction, max = full depth). Set to `auto` (EFFORT-2) to derive the level from admission-gate pressure — full depth when idle, shedding a level at a time as in-flight scans fill the gate, climbing back as it drains (one level/scan; `yarad_effort_auto_level` gauge tracks it). *Plumbing landed (EFFORT-1/2); caps wire to it in EFFORT-4 — until then all levels behave identically.* |
 | `YARAD_CACHE_TTL` | `600` (s) | verdict cache TTL; `0` disables caching |
 | `YARAD_CACHE_SIZE` | `65536` | in-memory LRU entries |
 | `YARAD_REDIS_URL` | — | optional shared L2 cache, e.g. `redis://host:6379/6` |
@@ -567,7 +567,7 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 
 **Performance / operations**
 
-- [ ] **Effort tiers** — `YARAD_EFFORT=1..10` (or `auto` from load) scaling extract depth / decode passes / XLM / reputation, with a per-request `X-YARAD-Effort` header so the rspamd caller picks effort from sender reputation (low on the latency-tight front, deep on the dovecot backend)
+- [~] **Effort tiers** — config + resolution + cache key + profile struct (EFFORT-1), `YARAD_EFFORT=auto` from admission-gate pressure (EFFORT-2), and the rspamd plugin setting `X-YARAD-Effort` from the sender's prior score / auth-failure symbols (EFFORT-3, opt-in via `effort_enabled`) all landed; EFFORT-4 wires each extraction/scan cap (decode depth, XLM/PDF clamps, reputation feeds, scan timeout) to read the resolved profile so the dial actually scales work
 - [ ] Batch `/scan` endpoint (collapse N part round-trips)
 
 **Other planned**
