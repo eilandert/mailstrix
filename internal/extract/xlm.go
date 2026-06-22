@@ -144,13 +144,44 @@ func fromOOXMLXLM(zr *zip.Reader, out *[][]byte, deadline time.Time) {
 	}
 }
 
-// fromBIFFXLM reads the Workbook (or Book) stream from an already-parsed OLE2
-// compound file, scans its BIFF records for BOUNDSHEET8 (type 0x0085) entries,
-// and appends "XLM-HIDDEN-MACROSHEET <state> <name>" synthetic streams to
-// res.Streams for any sheet whose dt (sheet type) is 0x01 (Excel-4.0 macro)
-// AND whose hidden-state bits indicate hidden or veryHidden.
+// fromBIFFXLM reads the Workbook and/or Book streams from an already-parsed OLE2
+// compound file and calls scanBIFFXLMStream for each present stream.
 //
-// BOUNDSHEET8 record layout (payload):
+// A Double Stream File (DSF) legitimately contains BOTH a BIFF8 "Workbook" stream
+// (for modern Excel) AND a BIFF5/7 "Book" stream (for Excel 95). Malware hides a
+// malicious XLM macrosheet in the legacy "Book" stream, which modern tools ignore.
+// Both streams are scanned when both are present.
+//
+// Fail-open: any parse error silently returns. Bounded by maxXLMSheets +
+// maxXLMMarkers across both streams; respects expired(deadline).
+func fromBIFFXLM(ole *oleparse.OLEFile, res *Result, deadline time.Time) {
+	if expired(deadline) {
+		return
+	}
+
+	// Scan each stream that is present; do NOT break after the first.
+	// The shared caps inside scanBIFFXLMStream (countXLMMarkers / len(res.Streams))
+	// bound the total work across both streams.
+	found := false
+	for _, streamName := range []string{"Workbook", "Book"} {
+		s := ole.FindStreamByName(streamName)
+		if s == nil {
+			continue
+		}
+		data := ole.GetStream(s.Index)
+		if len(data) == 0 {
+			continue
+		}
+		found = true
+		scanBIFFXLMStream(data, res, deadline)
+	}
+	_ = found
+}
+
+// scanBIFFXLMStream parses one BIFF Workbook/Book stream and appends XLM
+// markers and folded-formula streams to res.
+//
+// BOUNDSHEET record layout (payload):
 //
 //	lbPlyPos  uint32 LE — stream position of BOF record
 //	grbit     uint16 LE — byte 0: hidden state (bits 0–1); byte 1: dt (sheet type)
@@ -158,26 +189,10 @@ func fromOOXMLXLM(zr *zip.Reader, out *[][]byte, deadline time.Time) {
 //	fHighByte uint8      — 0 = latin1, 1 = UTF-16 LE
 //	name      []byte     — cch bytes (latin1) or cch*2 bytes (UTF-16 LE)
 //
-// Fail-open: any parse error silently returns. Bounded by maxXLMSheets +
-// maxXLMMarkers; respects expired(deadline).
-func fromBIFFXLM(ole *oleparse.OLEFile, res *Result, deadline time.Time) {
-	if expired(deadline) {
-		return
-	}
-
-	// Locate the Workbook or Book stream.
-	var workbookData []byte
-	for _, streamName := range []string{"Workbook", "Book"} {
-		s := ole.FindStreamByName(streamName)
-		if s != nil {
-			workbookData = ole.GetStream(s.Index)
-			break
-		}
-	}
-	if len(workbookData) == 0 {
-		return
-	}
-
+// Per-call locals (scanned, records, xlmOutput) reset for each stream, so each
+// stream gets its own folded-output and record-walk budget (≤2× total). The
+// shared global caps (countXLMMarkers / len(res.Streams)) still bound the union.
+func scanBIFFXLMStream(workbookData []byte, res *Result, deadline time.Time) {
 	r := bytes.NewReader(workbookData)
 	scanned := 0
 	records := 0
