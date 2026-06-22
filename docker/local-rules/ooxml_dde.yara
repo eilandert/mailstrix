@@ -89,3 +89,42 @@ rule SLK_DDE_Command : maldoc heuristic suspicious
     condition:
         filesize < 16MB and $marker
 }
+
+/*
+  CSV / Excel-2003-XML DDE command injection (CSV-DDE).
+
+  A cell whose text begins with '=', '+', '-' or '@' is treated as a FORMULA by
+  Excel even in a plain .csv/.tsv or "XML Spreadsheet 2003" file. When that
+  formula is the DDE command form, e.g.
+      =cmd|'/c calc.exe'!A1
+      @SUM(1+1)*cmd|'/c calc'!A0
+  opening the file launches the named program — macro-less, container-less
+  command execution delivered as innocuous-looking text (MITRE T1559.002 /
+  "CSV formula injection"). The yarad extractor (extract.fromCSVDDE /
+  fromSpreadsheetML) tests each cell and emits a synthetic "CSV-DDE <cell>"
+  stream for the DDE command form.
+
+  FP mitigation: requires the literal "CSV-DDE " prefix, only ever emitted by
+  yarad's extractor (never in raw file bytes) — and the extractor only emits it
+  when a cell both starts with a formula trigger AND carries the app|args!ref DDE
+  form (a bare "=SUM(A1:A9)" never matches). Zero-FP by construction.
+  score 70 = high confidence.
+
+  References:
+    https://attack.mitre.org/techniques/T1559/002/
+    https://owasp.org/www-community/attacks/CSV_Injection
+*/
+rule CSV_DDE_Command : maldoc heuristic suspicious
+{
+    meta:
+        author      = "yarad"
+        description = "CSV / Excel-2003-XML cell contains a DDE command-execution formula"
+        reference   = "https://attack.mitre.org/techniques/T1559/002/"
+        date        = "2026-06-22"
+        score       = "70"
+        tags        = "maldoc heuristic suspicious"
+    strings:
+        $marker = "CSV-DDE " ascii
+    condition:
+        filesize < 16MB and $marker
+}

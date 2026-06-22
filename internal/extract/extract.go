@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde"
 
 // OLE2/CFB compound-document magic (legacy .doc/.xls, the vbaProject.bin
 // embedded in OOXML, AND the encrypted-OOXML wrapper) and the local-file-header
@@ -275,6 +275,12 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 		// E-field formulas through the shared XLM sink.
 		res.IsDoc = true
 		fromSLK(buf, &res, deadline)
+	case isSpreadsheetML(buf):
+		// An Excel-2003-XML ("XML Spreadsheet 2003") document — plain XML, but
+		// Excel executes its cell formulas, so a DDE command formula in an
+		// ss:Formula / <Data> cell is a macro-less command-execution carrier.
+		// Surface CSV-DDE markers for the DDE command form.
+		fromSpreadsheetML(buf, &res, deadline)
 	default:
 		// Not a container. The buffer may still hide an MS Script Encoder block
 		// (#@~^...^#~@) — an encoded VBScript/JScript that raw-byte rules can't see
@@ -282,6 +288,11 @@ func Extract(buf []byte, deadline time.Time) (res Result) {
 		// embedded in .wsf/.hta/.html/.sct. Decode every block to cleartext so the
 		// keyword rules match. Best-effort; non-script input yields nothing.
 		fromEncodedScript(buf, &res, deadline)
+		// The buffer may also be a plain CSV/TSV whose cells carry the DDE
+		// command-injection form (=cmd|'/c calc'!A1) — a macro-less, container-
+		// less command-execution carrier. Self-gating: emits a CSV-DDE marker only
+		// on a real DDE-form cell, so it's safe to run on arbitrary text.
+		fromCSVDDE(buf, &res, deadline)
 	}
 
 	// After the format-specific extraction, run the single-layer static decode
