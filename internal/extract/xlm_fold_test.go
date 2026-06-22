@@ -132,6 +132,34 @@ func TestEmitDangerousMarkers_None(t *testing.T) {
 	}
 }
 
+// TestEmitDangerousMarkers_DDE covers the DDE command-execution verbs
+// (ftab 175 INITIATE / 178 EXECUTE): EXECUTE must fire its own marker and not
+// be masked by the =EXEC( substring rule, and INITIATE flags the VBA->DDE bridge.
+func TestEmitDangerousMarkers_DDE(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"=EXECUTE(cmd)", "XLM-DANGEROUS-FUNC EXECUTE"},
+		{"=INITIATE(srv)", "XLM-DANGEROUS-FUNC INITIATE"},
+	} {
+		var out [][]byte
+		emitDangerousMarkers(tc.in, &out)
+		if len(out) != 1 || !bytes.Equal(out[0], []byte(tc.want)) {
+			t.Errorf("%q: got %q, want [%q]", tc.in, out, tc.want)
+		}
+	}
+}
+
+// TestEmitDangerousMarkers_ExecNotExecute guards the substring boundary:
+// =EXECUTE( must NOT also match the shorter EXEC verb.
+func TestEmitDangerousMarkers_ExecNotExecute(t *testing.T) {
+	var out [][]byte
+	emitDangerousMarkers("=EXECUTE(cmd)", &out)
+	for _, m := range out {
+		if bytes.Equal(m, []byte("XLM-DANGEROUS-FUNC EXEC")) {
+			t.Errorf("EXEC marker wrongly fired on =EXECUTE(")
+		}
+	}
+}
+
 // --- emitFoldedFormula shared-sink tests (XLM-1) ---
 
 func TestEmitFoldedFormula_BelowFloor(t *testing.T) {
@@ -292,7 +320,8 @@ func TestFromOOXMLXLMFold_NoMacrosheets(t *testing.T) {
 }
 
 func TestFromOOXMLXLMFold_ShortResultFiltered(t *testing.T) {
-	// Formula that folds to < 8 bytes should be filtered.
+	// Formula that folds to < 8 bytes should be filtered (no real emulator/interpreter output).
+	// The emulator always emits the depth marker (D8), so we expect exactly 1 stream.
 	formulas := []string{`=CHAR(65)&CHAR(66)`} // "AB" — only 2 bytes
 	buf := makeOOXMLWithXLMFold(t, formulas)
 
@@ -302,8 +331,12 @@ func TestFromOOXMLXLMFold_ShortResultFiltered(t *testing.T) {
 	}
 	var out [][]byte
 	fromOOXMLXLMFold(zr, &out, time.Time{})
-	if len(out) != 0 {
-		t.Errorf("short result not filtered: got %d streams", len(out))
+	// Exactly 1 stream: the XLM-EMUL-DEPTH marker (emitted always); no real formula output.
+	if len(out) != 1 {
+		t.Errorf("expected 1 stream (depth marker only), got %d", len(out))
+	}
+	if len(out) == 1 && !bytes.Contains(out[0], []byte("XLM-EMUL-DEPTH")) {
+		t.Errorf("expected depth marker in the single stream, got %q", out[0])
 	}
 }
 

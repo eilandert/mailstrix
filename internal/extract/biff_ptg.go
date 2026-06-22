@@ -53,6 +53,39 @@ const (
 	ptgArea3d  = 0x3B // 3-D area reference (skip 10 bytes)
 	ptgNameX   = 0x39 // external name reference (skip 6 bytes)
 	ptgAttr    = 0x19 // control attribute (variable size)
+
+	// Single-byte arithmetic / comparison / reference operator ptgs (MS-XLS
+	// §2.5.198). Each is exactly 1 byte — opcode only, no operand bytes. They
+	// have no value/array class variants so normalizePtg passes them unchanged.
+
+	// Binary operators: pop 2 operands, push "" (neutral string — this is a
+	// static folder, not an evaluator; keeping stack arity correct is the goal).
+	ptgAdd   = 0x03
+	ptgSub   = 0x04
+	ptgMul   = 0x05
+	ptgDiv   = 0x06
+	ptgPower = 0x07
+	ptgLT    = 0x09
+	ptgLE    = 0x0A
+	ptgEQ    = 0x0B
+	ptgGE    = 0x0C
+	ptgGT    = 0x0D
+	ptgNE    = 0x0E
+	ptgIsect = 0x0F
+	ptgUnion = 0x10
+	ptgRange = 0x11
+
+	// Unary operators: pop 1 operand, push it back unchanged (no payload).
+	ptgUplus   = 0x12
+	ptgUminus  = 0x13
+	ptgPercent = 0x14
+
+	// ptgParen (0x15): grouping marker — no stack change, advance 1 byte.
+	ptgParen = 0x15
+
+	// ptgMissArg (0x16): missing optional argument — push "" so downstream
+	// ptgFuncVar still sees the right argument count.
+	ptgMissArg = 0x16
 )
 
 // BIFF8 ptg fold caps.
@@ -95,7 +128,10 @@ var biffFuncNames = map[uint16]string{
 	138:   "FWRITE",
 	149:   "REGISTER",
 	150:   "CALL",
+	175:   "INITIATE",
+	177:   "POKE",
 	178:   "EXECUTE",
+	179:   "TERMINATE",
 	201:   "UNREGISTER",
 	267:   "REGISTER.ID",
 	336:   "CONCATENATE",
@@ -267,6 +303,31 @@ func parseBIFF8Formula(data []byte) string {
 
 		case ptgNameX:
 			pos += 7 // 1-byte token + 6-byte external name ref
+			push("")
+
+		case ptgAdd, ptgSub, ptgMul, ptgDiv, ptgPower,
+			ptgLT, ptgLE, ptgEQ, ptgGE, ptgGT, ptgNE,
+			ptgIsect, ptgUnion, ptgRange:
+			// Binary operator (1 byte, no operand): pop 2, push "" so downstream
+			// ptgFunc/ptgFuncVar tokens still find the right stack arity.
+			pos++
+			popStack(&stack)
+			popStack(&stack)
+			push("")
+
+		case ptgUplus, ptgUminus, ptgPercent:
+			// Unary operator (1 byte, no operand): pop 1, push it back unchanged.
+			pos++
+			v := popStack(&stack)
+			push(v)
+
+		case ptgParen:
+			// Grouping marker — no stack change, advance 1 byte.
+			pos++
+
+		case ptgMissArg:
+			// Missing optional argument — push "" so ptgFuncVar sees correct argc.
+			pos++
 			push("")
 
 		case ptgAttr:

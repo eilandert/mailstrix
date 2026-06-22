@@ -214,6 +214,36 @@ func TestXLSBFold_Macrosheet(t *testing.T) {
 	}
 }
 
+// --- ptg-binop-skip BIFF12 mirror tests -----------------------------------------
+
+// TestParseBIFF12Formula_BinopSkip_EQBeforeEXEC mirrors the BIFF8 motivating
+// bug for the BIFF12 path: a ptgEQ operator between a ref+int and an EXEC
+// FuncVar must no longer cause early abort.
+func TestParseBIFF12Formula_BinopSkip_EQBeforeEXEC(t *testing.T) {
+	// ptgRef placeholder (5 bytes), ptgInt(1) (3 bytes), ptgEQ (1 byte),
+	// then ptgStr("calc"), then ptgFuncVar EXEC argc=1.
+	rgce := []byte{ptgRef, 0, 0, 0, 0}
+	rgce = append(rgce, ptgInt, 1, 0) // ptgInt value=1
+	rgce = append(rgce, ptgEQ)
+	rgce = append(rgce, strPtg("calc")...)
+	rgce = append(rgce, ptgFuncVar, 1)
+	rgce = binary.LittleEndian.AppendUint16(rgce, 110) // EXEC
+	got := parseBIFF12Formula(rgce)
+	if !strings.Contains(got, "EXEC") {
+		t.Errorf("BIFF12 EQ+EXEC: EXEC not in output; got %q", got)
+	}
+	if !strings.Contains(got, "calc") {
+		t.Errorf("BIFF12 EQ+EXEC: 'calc' not in output; got %q", got)
+	}
+}
+
+// TestParseBIFF12Formula_BinopSkip_NoPanic verifies a binop-only stream does
+// not panic on the BIFF12 path.
+func TestParseBIFF12Formula_BinopSkip_NoPanic(t *testing.T) {
+	rgce := []byte{ptgInt, 2, 0, ptgInt, 3, 0, ptgAdd}
+	_ = parseBIFF12Formula(rgce)
+}
+
 func TestXLSBFold_WorksheetFPGated(t *testing.T) {
 	// Same record content but in xl/worksheets/ — must NOT be folded (only
 	// xl/macrosheets/ is a macro carrier).

@@ -9,6 +9,11 @@ on:
   push:
     branches: [main, master]
   pull_request:
+    # Per-item campaign PRs target the staging branch `dev` and are gated by the
+    # local CI gate only (tools/yarad-local-ci.sh); remote CI runs once on the
+    # aggregate dev->main PR. Filtering on the base branch keeps PRs into dev from
+    # firing this workflow while still running it for PRs into main/master.
+    branches: [main, master]
   workflow_call:
 
 # Cancel a superseded in-progress run when new commits land on the same PR/ref.

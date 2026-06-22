@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth"
 
 // Options carries the per-request extraction caps (EFFORT-4) plus the time
 // budget. It is resolved once per scan from the effort level and threaded to the
@@ -397,10 +397,11 @@ func fromOLE(buf []byte, res *Result, bud *archiveBudget, depth int, deadline ti
 		return
 	}
 	// Encrypted OOXML stores the real (zip) document AES-wrapped in an
-	// EncryptedPackage stream with key material in EncryptionInfo. oleparse finds
-	// no VBA in that, so detect it explicitly: the encryption itself is the
-	// signal (legit senders rarely default-password-encrypt). We do NOT decrypt.
+	// EncryptedPackage stream with key material in EncryptionInfo. Before marking
+	// it as opaque, try default passwords (VelvetSweatshop etc.) via ECMA-376
+	// Agile/Standard decryption — many malware samples use well-known passwords.
 	if ole.FindStreamByName("EncryptedPackage") != nil || ole.FindStreamByName("EncryptionInfo") != nil {
+		fromDefaultPWOOXML(ole, res, deadline)
 		res.Encrypted = true
 		fromOLEEncInfo(ole, res) // ENCRYPTION-AES type marker
 		return
@@ -416,12 +417,20 @@ func fromOLE(buf []byte, res *Result, bud *archiveBudget, depth int, deadline ti
 		// Even when VBA extraction fails, a legacy spreadsheet may carry hidden
 		// XLM macrosheets in its Workbook stream — scan for BOUNDSHEET8 records.
 		fromBIFFXLM(ole, res, deadline)
+		// Surface VBA macros embedded in legacy PowerPoint (.ppt/.pps) files.
+		// oleparse.ExtractMacros finds no _VBA_PROJECT at the root level; the
+		// project is nested inside ExternalObjectStorage records in the PPT stream.
+		fromPPTVBA(ole, res, deadline)
 		// Structural indicators (ObjectPool / Flash) are independent of VBA, so
 		// surface them on a no-macro OLE2 too.
 		fromOLEIndicators(ole, res, deadline)
 		fromOLEOrphans(ole, res, deadline)
 		fromOLETimes(ole, res, deadline)
 		fromOLEEncType(ole, res, deadline)
+		// Attempt to decrypt BIFF8 streams protected with default passwords
+		// (XOR Method 1 and RC4) so hidden XLM macros are not missed.
+		fromDefaultPWXOR(ole, res, deadline)
+		fromDefaultPWRC4(ole, res, deadline)
 		fromOLEDigSig(ole, res, deadline)
 		// An OLE2Link object's URL moniker (CVE-2017-0199) is independent of VBA.
 		fromOLE2Link(ole, res, deadline)
@@ -453,6 +462,10 @@ func fromOLE(buf []byte, res *Result, bud *archiveBudget, depth int, deadline ti
 	fromOLEOrphans(ole, res, deadline)
 	fromOLETimes(ole, res, deadline)
 	fromOLEEncType(ole, res, deadline)
+	// Attempt to decrypt BIFF8 streams protected with default passwords
+	// (XOR Method 1 and RC4) so hidden XLM macros are not missed.
+	fromDefaultPWXOR(ole, res, deadline)
+	fromDefaultPWRC4(ole, res, deadline)
 	fromOLEDigSig(ole, res, deadline)
 	// An OLE2Link object's URL moniker (CVE-2017-0199) auto-fetches a remote
 	// payload on open; surface it as an OLE2LINK-URL marker.
@@ -462,6 +475,8 @@ func fromOLE(buf []byte, res *Result, bud *archiveBudget, depth int, deadline ti
 	// BOUNDSHEET8 records are in the Workbook stream, not a VBA project.
 	// fromBIFFXLM is a no-op when there is no Workbook/Book stream.
 	fromBIFFXLM(ole, res, deadline)
+	// Surface VBA macros embedded in legacy PowerPoint (.ppt/.pps) files.
+	fromPPTVBA(ole, res, deadline)
 	// No VBA found: the OLE2 may instead be an Outlook .msg (pull its nested
 	// attachment files out and scan them) or an MSI (dump its payload streams).
 	// Both helpers are no-ops for an OLE2 that isn't theirs. Try MSG first — a

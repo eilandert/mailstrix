@@ -56,15 +56,19 @@ var parityMarkers = map[string]markerKind{
 	"RTF-OBJUPDATE":         contractMarker, // rtf_tricks.yara RTF_ObjUpdate
 	"XLM-DANGEROUS-FUNC":    contractMarker, // xlm_macrosheet.yara XLM_Dangerous_Function
 	"XLM-HIDDEN-MACROSHEET": contractMarker, // xlm_macrosheet.yara
+	"XLM-AUTO-OPEN":         contractMarker, // xlm_macrosheet.yara XLM_AutoOpen_Dropper
+	"XLM-AUTO-CLOSE":        contractMarker, // xlm_macrosheet.yara XLM_AutoOpen_Dropper
 	"OLEID-OBJECTPOOL":      contractMarker, // oleid_indicators.yara OLEID_ObjectPool
 	"OLEID-FLASH":           contractMarker, // oleid_indicators.yara OLEID_Flash
 	"OLE2LINK-URL":          contractMarker, // oleid_indicators.yara OLE2Link_URL_Moniker
 	"OLETIMES-FUTURE":       contractMarker, // oleid_indicators.yara OLETimes_FutureStamp
 	"OLETIMES-SYNTHETIC":    contractMarker, // oleid_indicators.yara OLETimes_SyntheticStamps
+	"DEFAULTPW-DECRYPTED":   contractMarker, // oleid_indicators.yara DefaultPW_Decrypted
 	"ENCRYPTION-XOR":        contractMarker, // oleid_indicators.yara Encrypted_XOR_Obfuscation
 	"ENCRYPTION-RC4":        contractMarker, // oleid_indicators.yara Encrypted_Document
 	"ENCRYPTION-AES":        contractMarker, // oleid_indicators.yara Encrypted_Document
 	"DIGITAL-SIGNATURE":     contractMarker, // oleid_indicators.yara Document_DigitalSignature
+	"PPT-VBA-EXTRACTED":     contractMarker, // oleid_indicators.yara PPT_VBA_Macro
 	"VBA-ENVIRON":           contractMarker, // intent.yara VBA_Environ_Probe
 	"VBA-STOMPED":           contractMarker, // vba_stomping.yara
 	"MSD-DEEPDECODE":        contractMarker, // intent.yara Multilayer_Encoded_Payload
@@ -75,6 +79,9 @@ var parityMarkers = map[string]markerKind{
 	"PDF-JBIG2":             contractMarker, // pdf_indicators.yara PDF_JBIG2
 	"PDF-OBJSTM":            contractMarker, // pdf_indicators.yara PDF_ObjStm
 	"PDF-HEXOBFUSC":         contractMarker, // pdf_indicators.yara PDF_HexObfuscatedName
+
+	// D8: emulation-depth class marker for YARA depth-correlated rules.
+	"XLM-EMUL-DEPTH": contractMarker, // xlm_macrosheet.yara XLM_Emulator_Deep_Exec
 
 	// --- carved-payload labels (scanned by existing keyword/IOC rules; no own rule) ---
 	"DOCPROPS-STRINGS": internalMarker,

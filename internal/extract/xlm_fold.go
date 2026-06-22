@@ -51,6 +51,8 @@ const (
 // triggers a synthetic XLM-DANGEROUS-FUNC marker.
 var xlmDangerousFuncs = []string{
 	"EXEC",
+	"EXECUTE",  // DDE command execution (ftab 178); distinct from =EXEC( above
+	"INITIATE", // DDE conversation open (ftab 175) — VBA→DDE XLM bridge
 	"CALL",
 	"REGISTER",
 	"FOPEN",
@@ -180,8 +182,8 @@ func processXLMFoldSheet(sf *zip.File, out *[][]byte, totalOutput *int, deadline
 		}
 	}
 
-	// Two-pass cell-reference interpreter (XLM-6).
-	interpretXLMCells(cells, out, totalOutput, deadline)
+	// Bounded XLM emulator (D6). Zero-output fallback to interpreter inside emulateXLMCells.
+	emulateXLMCells(cells, out, totalOutput, deadline)
 }
 
 // emitFoldedFormula is the shared emit sink for folded/precomputed XLM strings.

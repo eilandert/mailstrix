@@ -199,6 +199,112 @@ func TestBIFF8OutputCapBounded(t *testing.T) {
 	}
 }
 
+// --- ptg-binop-skip tests -------------------------------------------------------
+
+// TestBIFF8BinopSkip_EQBeforeEXEC tests the motivating bug: a comparison
+// operator (ptgEQ) before a ptgFuncVar EXEC token previously caused early abort,
+// so the EXEC marker was never emitted. Now the operator is consumed (pop 2,
+// push "") and the stream stays in sync so EXEC folds correctly.
+//
+// Stream encodes roughly: IF(A1=1, EXEC("calc")) at the ptg level, simplified to
+// the minimal sequence that exercises the EQ operator:
+//
+//	ptgRef(A1), ptgInt(1), ptgEQ → pop 2 push "", ptgStr("calc"), ptgFuncVar EXEC(1)
+func TestBIFF8BinopSkip_EQBeforeEXEC(t *testing.T) {
+	stream := []byte{ptgRef, 0, 0, 0, 0} // A1 ref placeholder
+	stream = append(stream, ptgIntTok(1)...)
+	stream = append(stream, ptgEQ)
+	stream = append(stream, ptgStr8("calc")...)
+	stream = append(stream, ptgFuncVarTok(1, 110)...) // EXEC id=110
+	got := parseBIFF8Formula(stream)
+	if !strings.Contains(got, "EXEC") {
+		t.Errorf("EXEC not in folded output; got %q", got)
+	}
+	if !strings.Contains(got, "calc") {
+		t.Errorf("'calc' arg not in folded output; got %q", got)
+	}
+	var out [][]byte
+	emitDangerousMarkers(got, &out)
+	var sawMarker bool
+	for _, s := range out {
+		if string(s) == "XLM-DANGEROUS-FUNC EXEC" {
+			sawMarker = true
+		}
+	}
+	if !sawMarker {
+		t.Errorf("XLM-DANGEROUS-FUNC EXEC marker not emitted; streams=%q", out)
+	}
+}
+
+// TestBIFF8BinopSkip_BinopOnlyNoPanic verifies a stream of only binary-operator
+// tokens (ptgInt, ptgInt, ptgAdd) does not panic and terminates cleanly.
+func TestBIFF8BinopSkip_BinopOnlyNoPanic(t *testing.T) {
+	stream := append(ptgIntTok(2), ptgIntTok(3)...)
+	stream = append(stream, ptgAdd)
+	// Must not panic; result is neutral (empty or "").
+	_ = parseBIFF8Formula(stream)
+}
+
+// TestBIFF8BinopSkip_AllBinaryOps verifies that every binary-op ptg is
+// consumed as 1 byte without desync — a string pushed AFTER the operator
+// must still appear in the output.
+func TestBIFF8BinopSkip_AllBinaryOps(t *testing.T) {
+	binops := []byte{
+		ptgAdd, ptgSub, ptgMul, ptgDiv, ptgPower,
+		ptgLT, ptgLE, ptgEQ, ptgGE, ptgGT, ptgNE,
+		ptgIsect, ptgUnion, ptgRange,
+	}
+	for _, op := range binops {
+		stream := append(ptgIntTok(1), ptgIntTok(2)...)
+		stream = append(stream, op)
+		stream = append(stream, ptgStr8("sentinel")...)
+		got := parseBIFF8Formula(stream)
+		if !strings.Contains(got, "sentinel") {
+			t.Errorf("op 0x%02x: 'sentinel' not in output; got %q", op, got)
+		}
+	}
+}
+
+// TestBIFF8BinopSkip_UnaryOps verifies that unary-op ptgs are consumed
+// as 1 byte and the operand is passed through unchanged.
+func TestBIFF8BinopSkip_UnaryOps(t *testing.T) {
+	unaryOps := []byte{ptgUplus, ptgUminus, ptgPercent}
+	for _, op := range unaryOps {
+		stream := append(ptgStr8("x"), op)
+		stream = append(stream, ptgStr8("after")...)
+		got := parseBIFF8Formula(stream)
+		// Both "x" (passed through by unary) and "after" must appear.
+		if !strings.Contains(got, "x") || !strings.Contains(got, "after") {
+			t.Errorf("op 0x%02x: got %q", op, got)
+		}
+	}
+}
+
+// TestBIFF8BinopSkip_Paren verifies ptgParen is a no-op on the stack (just
+// advances 1 byte) so surrounding tokens fold normally.
+func TestBIFF8BinopSkip_Paren(t *testing.T) {
+	stream := append(ptgStr8("hello"), ptgParen)
+	stream = append(stream, ptgStr8("world")...)
+	stream = append(stream, ptgConcat)
+	got := parseBIFF8Formula(stream)
+	if got != "helloworld" {
+		t.Errorf("paren: got %q", got)
+	}
+}
+
+// TestBIFF8BinopSkip_MissArg verifies ptgMissArg pushes "" so a following
+// ptgFuncVar still receives the correct argument count.
+func TestBIFF8BinopSkip_MissArg(t *testing.T) {
+	// EXEC(, "calc") — first arg is missing, second is "calc"; argc=2.
+	stream := []byte{ptgMissArg}
+	stream = append(stream, ptgStr8("calc")...)
+	stream = append(stream, ptgFuncVarTok(2, 110)...) // EXEC
+	got := parseBIFF8Formula(stream)
+	if !strings.Contains(got, "EXEC") {
+		t.Errorf("MissArg: EXEC not in output; got %q", got)
+	}
+}
+
 // ptgStr8a builds a ptgStr with a >255 length by using the raw cch byte
 // truncated — for cap testing we only need a long body, so cap cch at 255 and
 // pad the body; parseBIFF8Formula reads exactly cch chars.
@@ -209,4 +315,24 @@ func ptgStr8a(s string) []byte {
 	}
 	b := []byte{ptgStr, byte(n), 0x00}
 	return append(b, []byte(s[:n])...)
+}
+
+// TestBIFF8FuncNames_DDE verifies the DDE ftab ids (175 INITIATE / 177 POKE /
+// 179 TERMINATE) now render as named functions so their args stay YARA-visible
+// and (for INITIATE) the dangerous-func marker can fire downstream.
+func TestBIFF8FuncNames_DDE(t *testing.T) {
+	for _, tc := range []struct {
+		id   uint16
+		name string
+	}{
+		{175, "INITIATE"},
+		{177, "POKE"},
+		{179, "TERMINATE"},
+	} {
+		stream := append(ptgStr8("x"), ptgFuncVarTok(1, tc.id)...)
+		got := parseBIFF8Formula(stream)
+		if !strings.Contains(got, tc.name) {
+			t.Errorf("ftab %d: %q not in folded output; got %q", tc.id, tc.name, got)
+		}
+	}
 }
