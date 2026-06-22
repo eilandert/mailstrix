@@ -39,11 +39,11 @@ func TestNextRow(t *testing.T) {
 		{"Z9", "Z10"},
 		{"AA100", "AA101"},
 		{"Z9999998", "Z9999999"},
-		{"Z9999999", ""},    // overflow → ""
-		{"", ""},            // empty → ""
-		{"1A", ""},          // no leading column → ""
-		{"A", ""},           // no row → ""
-		{"A0", ""},          // row 0 invalid → ""
+		{"Z9999999", ""}, // overflow → ""
+		{"", ""},         // empty → ""
+		{"1A", ""},       // no leading column → ""
+		{"A", ""},        // no row → ""
+		{"A0", ""},       // row 0 invalid → ""
 		{"INVALID", ""},
 	}
 	for _, tc := range cases {

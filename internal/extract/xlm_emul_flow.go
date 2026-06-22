@@ -165,11 +165,11 @@ func parseNameArg(formula string) (name, value string, ok bool) {
 }
 
 // handleIF processes an IF(cond,true,false) formula at the current PC.
-// - If cond evaluates to "TRUE": redirect PC to truePart coord.
-// - If cond evaluates to "FALSE": redirect PC to falsePart coord.
-// - Otherwise (unknown): follow truePart immediately and push falsePart as a
-//   fork frame (COW snapshot). If falsePart is empty, only the true branch
-//   is followed.
+//   - If cond evaluates to "TRUE": redirect PC to truePart coord.
+//   - If cond evaluates to "FALSE": redirect PC to falsePart coord.
+//   - Otherwise (unknown): follow truePart immediately and push falsePart as a
+//     fork frame (COW snapshot). If falsePart is empty, only the true branch
+//     is followed.
 //
 // curSheet and curCoord are updated in-place to move the PC.
 func (m *xlmMachine) handleIF(formula, sheetName, coord string, curSheet, curCoord *string) {
@@ -258,10 +258,10 @@ func resolveBranchTarget(target, defaultSheet string) (sheet, coord string) {
 }
 
 // handleWHILE processes a WHILE(cond) formula.
-// - Evaluates cond. If "FALSE"/falsy: scan forward past the matching NEXT and
-//   set PC there.
-// - If "TRUE"/unknown: push current coord onto m.whileStack and advance PC to
-//   next row (enter loop body).
+//   - Evaluates cond. If "FALSE"/falsy: scan forward past the matching NEXT and
+//     set PC there.
+//   - If "TRUE"/unknown: push current coord onto m.whileStack and advance PC to
+//     next row (enter loop body).
 //
 // curSheet and curCoord are updated in-place.
 func (m *xlmMachine) handleWHILE(formula, sheetName, coord string, curSheet, curCoord *string) {
@@ -365,10 +365,10 @@ func (m *xlmMachine) findMatchingNext(sheetName, whileCoord string) string {
 }
 
 // handleNEXT processes a NEXT() formula (closes a WHILE loop body).
-// - If whileStack is non-empty: pop the WHILE address, check unroll counter.
-//   If unroll count for this WHILE < maxEmulWhileUnroll, jump back to WHILE.
-//   Otherwise advance past NEXT.
-// - If whileStack is empty: advance to next row (standalone NEXT, no loop).
+//   - If whileStack is non-empty: pop the WHILE address, check unroll counter.
+//     If unroll count for this WHILE < maxEmulWhileUnroll, jump back to WHILE.
+//     Otherwise advance past NEXT.
+//   - If whileStack is empty: advance to next row (standalone NEXT, no loop).
 //
 // curSheet and curCoord are updated in-place.
 func (m *xlmMachine) handleNEXT(curSheet, curCoord *string) {
