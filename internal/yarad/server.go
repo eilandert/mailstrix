@@ -61,7 +61,14 @@ type Server struct {
 	flights flightGroup
 	admit   chan struct{} // admission gate: bounds in-flight buffers (held whole request)
 	sem     chan struct{} // scan-CPU gate: held only around the libyara scan
-	metrics struct {
+
+	// autoEffort is the smoothed effort level for YARAD_EFFORT=auto (EFFORT-2). It
+	// trails admission-gate pressure by one level per scan (hysteresis). 0 until
+	// the first auto scan, then always in [1, EffortMax]. Read/written under the
+	// admission slot, so the Load/Store race window is benign (a stale level is at
+	// most one scan old and self-corrects next scan).
+	autoEffort atomic.Int64
+	metrics    struct {
 		scans, matches, errors, busy        atomic.Uint64
 		canceled                            atomic.Uint64
 		cacheHit, cacheMiss, cacheCoalesced atomic.Uint64
@@ -158,9 +165,13 @@ func (s *Server) logStartup(addr string) {
 			cache = "redis+memory"
 		}
 	}
-	s.logf("listening on %s (rules=%d, timeout=%s, scan_timeout=%s, max_concurrent=%d, max_inflight=%d, max_body=%dB, cache=%s ttl=%s size=%d, auth=%t)",
+	effort := strconv.Itoa(s.cfg.Effort)
+	if s.cfg.EffortAuto {
+		effort = "auto(idle=" + strconv.Itoa(s.cfg.Effort) + ")"
+	}
+	s.logf("listening on %s (rules=%d, timeout=%s, scan_timeout=%s, max_concurrent=%d, max_inflight=%d, max_body=%dB, cache=%s ttl=%s size=%d, effort=%s/%d, auth=%t)",
 		addr, s.engine.RuleCount(), s.cfg.BackendTimeout, s.cfg.ScanTimeout,
-		s.cfg.MaxConcurrent, s.cfg.MaxInflight, s.cfg.MaxBody, cache, s.cfg.CacheTTL, s.cfg.CacheSize, s.authRequired())
+		s.cfg.MaxConcurrent, s.cfg.MaxInflight, s.cfg.MaxBody, cache, s.cfg.CacheTTL, s.cfg.CacheSize, effort, s.cfg.EffortMax, s.authRequired())
 
 	// Worst-case request-buffer memory: each in-flight scan can hold a full body
 	// plus its extracted macro streams, on top of the loaded-rules RSS. Surface
@@ -404,7 +415,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	// DoS guard — a caller-set header can never exceed the operator's ceiling. The
 	// resolved level rides on meta so it folds into the verdict-cache key below.
 	hv, hset := effortHeader(r)
-	meta.Effort = ResolveEffortLevel(hv, hset, s.cfg.Effort, s.cfg.EffortMax)
+	meta.Effort = ResolveEffortLevel(hv, hset, s.autoEnvDefault(!hset), s.cfg.EffortMax)
 
 	// Mix the active ruleset fingerprint AND the metadata into the cache key. The
 	// fingerprint invalidates old verdicts on a SIGHUP reload (old keys orphan and
@@ -598,6 +609,14 @@ func (s *Server) serveMetrics(w http.ResponseWriter) {
 	b.WriteString("# TYPE yarad_rules gauge\n")
 	b.WriteString("yarad_rules " + strconv.FormatInt(s.engine.RuleCount(), 10) + "\n")
 
+	// EFFORT-2: the live auto effort level (0 until the first auto scan; static
+	// builds leave it 0). Lets an operator watch the dial shed/recover under load.
+	if s.cfg.EffortAuto {
+		b.WriteString("# HELP yarad_effort_auto_level current YARAD_EFFORT=auto level (trails admission-gate pressure)\n")
+		b.WriteString("# TYPE yarad_effort_auto_level gauge\n")
+		b.WriteString("yarad_effort_auto_level " + strconv.FormatInt(s.autoEffort.Load(), 10) + "\n")
+	}
+
 	// OLE/OOXML pre-extraction counters — visibility into the document path.
 	ex := s.engine.ExtractMetrics()
 	fm("extract_docs_total", "attachments recognised as OLE2/OOXML containers", ex.Docs)
@@ -712,6 +731,34 @@ const filenameHeader = "X-YARAD-Filename"
 // EffortMax, so it can only ever LOWER effort below the ceiling, never raise it
 // past the configured DoS bound (see ResolveEffortLevel).
 const effortHeaderName = "X-YARAD-Effort"
+
+// autoEnvDefault returns the env-default effort level fed to ResolveEffortLevel.
+// With YARAD_EFFORT=auto (EFFORT-2) and no per-request header overriding it
+// (canAuto), it derives the level from current admission-gate pressure and steps
+// the smoothed autoEffort one level toward it (hysteresis), so the returned
+// "default" tracks load. Otherwise (auto off, or a header is present and takes
+// precedence) it returns the static configured level cfg.Effort.
+//
+// Called while holding an admission slot, so len(s.admit) counts this request.
+func (s *Server) autoEnvDefault(canAuto bool) int {
+	if !s.cfg.EffortAuto || !canAuto {
+		return s.cfg.Effort
+	}
+	occupied := len(s.admit) // includes our own held slot
+	target := autoTargetLevel(occupied, cap(s.admit), s.cfg.Effort, s.cfg.EffortMax)
+	// CAS loop: admission slots are concurrent, so a plain Load/Store would let two
+	// scans read the same level and lose a step (or both "snap" from 0 to different
+	// targets). CAS makes each step atomic — concurrent scans serialise, every one
+	// moves at most one level, hysteresis holds. The loop retries until our step
+	// commits against the level no other scan changed underneath us.
+	for {
+		cur := s.autoEffort.Load()
+		next := int64(autoStepLevel(int(cur), target))
+		if s.autoEffort.CompareAndSwap(cur, next) {
+			return int(next)
+		}
+	}
+}
 
 // effortHeader parses the X-YARAD-Effort request header. It returns the integer
 // value and true when the header carried a usable non-negative integer; a

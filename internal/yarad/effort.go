@@ -62,6 +62,77 @@ func EffortProfileFor(level int) EffortProfile {
 	}
 }
 
+// autoTargetLevel maps current admission-gate pressure to the effort level the
+// auto resolver (EFFORT-2) wants to be at. It is the steady-state target; the
+// stepper (autoStepLevel) approaches it one level per scan for hysteresis.
+//
+//	occupied  in-flight admission slots (including the caller's own held slot),
+//	          so it is in [1, capacity].
+//	capacity  the gate size (cfg.MaxInflight); a non-positive value means the gate
+//	          is effectively unbounded, so there is no pressure -> idle level.
+//	idleLevel the ceiling to use when the gate is empty (cfg.Effort, == EffortMax
+//	          by default). The target never exceeds it.
+//	effortMax the operator's hard ceiling; idleLevel is clamped into [1, effortMax].
+//
+// Mapping: empty gate -> idleLevel; full gate -> 1; linear in between. We measure
+// pressure as the fraction of slots used BEYOND the caller's own (occupied-1 over
+// capacity-1) so a single in-flight request (no contention) still maps to the
+// idle ceiling, and a saturated gate maps to 1.
+func autoTargetLevel(occupied, capacity, idleLevel, effortMax int) int {
+	if effortMax < 1 {
+		effortMax = 1
+	}
+	if idleLevel < 1 {
+		idleLevel = 1
+	}
+	if idleLevel > effortMax {
+		idleLevel = effortMax
+	}
+	// No bound (or a degenerate 1-slot gate) -> no measurable pressure.
+	if capacity <= 1 {
+		return idleLevel
+	}
+	if occupied < 1 {
+		occupied = 1
+	}
+	if occupied > capacity {
+		occupied = capacity
+	}
+	// Fraction of contention in [0,1]: 0 when we are the only request, 1 when the
+	// gate is full. span = idleLevel-1 levels to give away under full pressure.
+	span := idleLevel - 1
+	if span <= 0 {
+		return idleLevel
+	}
+	// drop = round(frac * span), frac = (occupied-1)/(capacity-1).
+	num := (occupied - 1) * span
+	den := capacity - 1
+	drop := (num + den/2) / den // integer round-half-up
+	level := idleLevel - drop
+	if level < 1 {
+		level = 1
+	}
+	return level
+}
+
+// autoStepLevel moves the smoothed auto level one step toward target. Stepping
+// by at most one level per scan is the hysteresis: a brief pressure spike can't
+// slam effort to 1 and back, it ramps. cur==0 (uninitialised) snaps straight to
+// target so the first scan starts at the right level, not at 0+1.
+func autoStepLevel(cur, target int) int {
+	if cur < 1 {
+		return target // first observation: adopt target directly
+	}
+	switch {
+	case target > cur:
+		return cur + 1
+	case target < cur:
+		return cur - 1
+	default:
+		return cur
+	}
+}
+
 // ResolveEffortLevel applies the request-time resolution order:
 //
 //	header (if a valid 1..N int was sent) ?? envDefault

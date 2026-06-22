@@ -130,8 +130,12 @@ type Config struct {
 	// EFFORT-4 retrofits them to read EffortProfile. So today every level behaves
 	// identically — the plumbing is inert but present, so each new feature can
 	// wire its cap in from day one.
-	Effort    int // YARAD_EFFORT     (default = EffortMax; the env/default level)
-	EffortMax int // YARAD_EFFORT_MAX (default 10; hard ceiling for header override)
+	Effort     int  // YARAD_EFFORT     (default = EffortMax; the env/default level)
+	EffortMax  int  // YARAD_EFFORT_MAX (default 10; hard ceiling for header override)
+	EffortAuto bool // YARAD_EFFORT=auto (EFFORT-2): derive the per-request level from
+	// admission-gate pressure instead of a fixed env default — start at EffortMax
+	// when idle, shed a level as in-flight scans fill the gate, climb back as it
+	// drains. A request-level X-YARAD-Effort header still overrides auto.
 
 	Version string // build version string, set by main (not from env); for /version
 }
@@ -174,6 +178,12 @@ func LoadConfig() *Config {
 		RuleAllowlist:  envSet("YARAD_RULE_ALLOWLIST", ""),
 		EffortMax:      envInt("YARAD_EFFORT_MAX", defaultEffortMax),
 		Effort:         envInt("YARAD_EFFORT", 0), // 0 -> sanitize sets = EffortMax
+		// YARAD_EFFORT=auto (EFFORT-2) flips auto pressure-shedding. The numeric
+		// Effort above stays the IDLE ceiling for the auto resolver (with "auto" the
+		// Atoi above fails -> Effort==0 -> sanitize sets it = EffortMax, i.e. the
+		// idle level is full depth) and is also the fallback level if auto is later
+		// disabled by config error.
+		EffortAuto: strings.EqualFold(strings.TrimSpace(os.Getenv("YARAD_EFFORT")), "auto"),
 	}
 	c.sanitize()
 	return c
