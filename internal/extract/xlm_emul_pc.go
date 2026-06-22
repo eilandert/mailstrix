@@ -270,6 +270,16 @@ func (m *xlmMachine) runPC(currentSheet, currentCoord *string) {
 			}
 			*currentCoord = next
 
+		case hasControlVerb(formula, "SET.VALUE"):
+			// SET.VALUE(coord, expr): evaluate expr, store result in the target
+			// cell's value so subsequent EXEC/other cells can resolve it.
+			m.handleSetValue(formula, *currentSheet)
+			next := nextRow(*currentCoord)
+			if next == "" {
+				return
+			}
+			*currentCoord = next
+
 		default:
 			// Non-control-flow formula (or empty): eval and emit, then advance.
 			if formula != "" {

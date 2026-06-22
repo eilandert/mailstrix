@@ -17,7 +17,10 @@ package extract
 // Plus inherited bounds: deadline (threaded), maxXLMFoldOutputLen (sink),
 // getFormulaCell scan cap maxEmulFormulaCell, cells ≤ maxEmulCells.
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Emulator fuse constants.
 const (
@@ -166,11 +169,90 @@ func (m *xlmMachine) getFormulaCell(sheetName string) *emulCell {
 	return nil
 }
 
-// emulateXLMCells is the adapter entry point for the bounded emulator (D6).
-// Until D6 is wired, this is a passthrough to interpretXLMCells so that
-// goldens remain byte-identical and no live behaviour changes.
+// emulateXLMCells is the live entry point for the bounded XLM emulator (D6).
+// It populates a machine from cells, finds the Auto_Open entry coordinate via
+// a three-tier name lookup, runs the emulator, and falls back to
+// interpretXLMCells when the emulator produces no output (defense-in-depth).
+// A top-level recover ensures the emulator never panics into the extraction
+// pipeline; any partial *out accumulated before the panic is preserved.
 func emulateXLMCells(cells []xlmCell, out *[][]byte, totalOutput *int, deadline time.Time) {
-	// TODO(D6): replace body with emulator execution; keep interpretXLMCells
-	// call only as the fallback / pre-pass.
-	interpretXLMCells(cells, out, totalOutput, deadline)
+	if len(cells) == 0 {
+		return
+	}
+	if len(cells) > maxEmulCells {
+		cells = cells[:maxEmulCells]
+	}
+
+	// Top-level recover — emulator must never panic live.
+	defer func() {
+		if r := recover(); r != nil {
+			// Partial *out is already accumulated; just stop.
+		}
+	}()
+
+	m := newMachine(out, totalOutput, deadline)
+
+	// Populate grid from cells. Use a fixed sheet name; OOXML path does not
+	// carry the workbook-level sheet name at this call site.
+	const sheetName = "Sheet1"
+	for _, c := range cells {
+		m.setCell(sheetName, c.coord, c.formula, c.value)
+	}
+
+	// Find start cell via Auto_Open lookup (strict→prefix→fuzzy-subseq→fallback).
+	startCoord := findAutoOpenCoord(m, sheetName, cells)
+
+	// Remember output length before emulator run.
+	priorLen := len(*out)
+
+	m.run(sheetName, startCoord)
+
+	// Zero-output fallback: if emulator produced nothing, try old interpreter.
+	if len(*out) == priorLen {
+		interpretXLMCells(cells, out, totalOutput, deadline)
+	}
+}
+
+// findAutoOpenCoord finds the XLM entry-point coordinate using a three-tier lookup:
+//  1. Strict:       m.names["AUTO_OPEN"] or m.names["Auto_Open"] exact match
+//  2. Prefix:       any m.names key whose upper-case form starts with "AUTO_OPEN"
+//  3. Fuzzy-subseq: any m.names key containing "AUTO" and "OPEN" (in that order)
+//  4. Fallback:     getFormulaCell(sheetName) — first formula cell in sheet
+//
+// Returns the coord string (normalised) or "A1" when all lookups fail.
+// For OOXML documents the workbook-level defined names are not parsed at this
+// call site, so m.names is typically empty; the full lookup is implemented for
+// correctness when SET.NAME/DEFINE.NAME cells have already populated m.names.
+func findAutoOpenCoord(m *xlmMachine, sheetName string, _ []xlmCell) string {
+	// Tier 1: strict exact match (case-insensitive on the canonical spellings).
+	for _, key := range []string{"Auto_Open", "AUTO_OPEN", "auto_open"} {
+		if v, ok := m.names[key]; ok && v != "" {
+			return v
+		}
+	}
+
+	// Tier 2: prefix — any name whose upper-case form starts with "AUTO_OPEN".
+	for k, v := range m.names {
+		if len(k) >= 9 && strings.ToUpper(k[:9]) == "AUTO_OPEN" && v != "" {
+			return v
+		}
+	}
+
+	// Tier 3: fuzzy subsequence — key contains both "AUTO" and "OPEN"
+	// (the "AUTO" substring must appear before "OPEN").
+	for k, v := range m.names {
+		up := strings.ToUpper(k)
+		ai := strings.Index(up, "AUTO")
+		oi := strings.Index(up, "OPEN")
+		if ai >= 0 && oi > ai && v != "" {
+			return v
+		}
+	}
+
+	// Tier 4: fallback — first formula cell in the sheet.
+	cell := m.getFormulaCell(sheetName)
+	if cell != nil {
+		return cell.coord
+	}
+	return "A1"
 }

@@ -182,8 +182,8 @@ func processXLMFoldSheet(sf *zip.File, out *[][]byte, totalOutput *int, deadline
 		}
 	}
 
-	// Two-pass cell-reference interpreter (XLM-6).
-	interpretXLMCells(cells, out, totalOutput, deadline)
+	// Bounded XLM emulator (D6). Zero-output fallback to interpreter inside emulateXLMCells.
+	emulateXLMCells(cells, out, totalOutput, deadline)
 }
 
 // emitFoldedFormula is the shared emit sink for folded/precomputed XLM strings.

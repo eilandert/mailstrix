@@ -437,3 +437,36 @@ func (m *xlmMachine) handleSetName(formula, sheetName string) {
 	}
 	m.names[name] = value
 }
+
+// handleSetValue processes SET.VALUE(coord, expr): evaluates expr and stores
+// the result in the target cell's value field so that subsequent cells that
+// reference coord (e.g. =EXEC(A2)) can resolve it via getCellValue.
+// Uses the same reSetValue regex as the interpreter. No-op on parse failure.
+func (m *xlmMachine) handleSetValue(formula, sheetName string) {
+	matches := reSetValue.FindStringSubmatch(formula)
+	if matches == nil {
+		return
+	}
+	targetCoord := normCoord(matches[1])
+	if targetCoord == "" {
+		return
+	}
+	valExpr := strings.TrimSpace(matches[2])
+	// Evaluate the value expression (fold + resolve refs).
+	resolved := evalExpr(m, sheetName, valExpr, nil)
+	if resolved == "" {
+		// Fallback: strip outer quotes from a bare string literal.
+		resolved = stripOuterQuotes(valExpr)
+	}
+	// Store/update the cell with the computed value.
+	// Preserve any existing formula; only overwrite the value field.
+	sh, ok := m.sheets[sheetName]
+	if ok {
+		if cell, exists := sh.cells[targetCoord]; exists {
+			cell.value = resolved
+			return
+		}
+	}
+	// Cell doesn't exist yet: create it with an empty formula and the resolved value.
+	m.setCell(sheetName, targetCoord, "", resolved)
+}
