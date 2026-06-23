@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2"
 
 // Options carries the per-request extraction caps (EFFORT-4) plus the time
 // budget. It is resolved once per scan from the effort level and threaded to the
@@ -692,15 +692,20 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time) {
 	// injection, OLE object, frame, externalLink). Each hit appends a synthetic
 	// "OOXML-EXTERNAL-REL <Type> <Target>" stream so YARA rules can match it.
 	// Fail-open: malformed .rels parts are silently skipped.
+	lenBeforeRels := len(out)
 	fromOOXMLRels(zr, &out, deadline)
+	hasExtRel := len(out) > lenBeforeRels
 	// Scan word/document.xml (and related parts) for DDE/DDEAUTO field
 	// instructions. Each hit appends a synthetic "OOXML-DDE-FIELD <instr>" stream.
 	// Fail-open: malformed XML is silently skipped.
+	lenBeforeDDE := len(out)
 	fromOOXMLDDE(zr, &out, deadline)
+	hasDDE := len(out) > lenBeforeDDE
 	// Detect hidden Excel-4.0 macrosheets in OOXML workbooks (xlsm/xlsb/xlam).
 	// Each hidden/veryHidden sheet coinciding with an xl/macrosheets/ part appends
 	// a synthetic "XLM-HIDDEN-MACROSHEET <state> <name>" stream.
 	// Fail-open: any parse error is silently ignored.
+	lenBeforeXLM := len(out)
 	fromOOXMLXLM(zr, &out, deadline)
 	// Constant-fold XLM formula strings from OOXML macrosheets. Reassembles
 	// obfuscated CHAR()&CHAR()&"..." concatenations into cleartext so
@@ -722,6 +727,15 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time) {
 	if hasDocPropsMarker(out) {
 		res.HasDocProps = true
 	}
+	// Emit OLEID-style synthetic marker streams for OOXML structural indicators.
+	// These mirror oletools' oleid.py indicators for the OOXML path. Each marker
+	// is only appended when not already present (dedup guard) and never causes
+	// extraction failure (fail-open). The OLE path (oleid.go) emits OLEID-OBJECTPOOL
+	// and OLEID-FLASH only; these four markers are OOXML-exclusive, no overlap.
+	out = appendOLEIDMarker(out, "OLEID-VBA-PRESENT", attempted > 0 && len(out) > parentStreams)
+	out = appendOLEIDMarker(out, "OLEID-EXTREL", hasExtRel)
+	out = appendOLEIDMarker(out, "OLEID-DDE", hasDDE)
+	out = appendOLEIDMarker(out, "OLEID-XLM-PRESENT", len(out) > lenBeforeXLM || res.HasXLMFold)
 	res.Streams = out
 	// Every .bin we tried failed to parse and nothing came out: a document that
 	// looks macro-bearing but yields no usable VBA (obfuscated/corrupt/hostile).
@@ -730,6 +744,21 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time) {
 	if attempted > 0 && len(out) == parentStreams && failedBins == attempted {
 		res.Failed = true
 	}
+}
+
+// appendOLEIDMarker appends a []byte stream containing marker to out if cond is
+// true and the marker is not already present. Fail-open: always returns out.
+func appendOLEIDMarker(out [][]byte, marker string, cond bool) [][]byte {
+	if !cond {
+		return out
+	}
+	mb := []byte(marker)
+	for _, s := range out {
+		if bytes.Equal(s, mb) {
+			return out
+		}
+	}
+	return append(out, mb)
 }
 
 // externalRelSchemes lists the URI schemes that indicate an attacker-controlled

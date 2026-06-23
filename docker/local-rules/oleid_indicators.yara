@@ -216,3 +216,67 @@ rule PPT_VBA_Macro : maldoc heuristic
     condition:
         filesize < 64MB and $marker
 }
+
+/*
+  OOXML OLEID structural indicators (oleid2).
+
+  yarad's fromOOXMLZip emits four synthetic marker streams for structural
+  indicators on the OOXML (ZIP-based) scan path, mirroring oletools' oleid.py
+  for .docx/.xlsx/.xlsm/.pptx containers. The markers are only emitted by
+  yarad, so matching them is zero-FP by construction. All are stacking signals
+  scored low-to-moderate; weight increases when they co-occur with macro/keyword
+  rules from the same scan.
+
+  Reference: https://github.com/decalage2/oletools/wiki/oleid
+*/
+rule OLEID_OOXML_VBA_Present : maldoc heuristic suspicious
+{
+    meta:
+        author      = "yarad"
+        description = "OOXML document contains VBA macro bins that were successfully decoded -- oleid2 indicator"
+        reference   = "https://github.com/decalage2/oletools/wiki/oleid"
+        score       = "20"
+    strings:
+        $marker = "OLEID-VBA-PRESENT" ascii fullword
+    condition:
+        filesize < 64MB and $marker
+}
+
+rule OLEID_OOXML_ExternalRel : maldoc heuristic suspicious
+{
+    meta:
+        author      = "yarad"
+        description = "OOXML document has external relationships (template injection / NTLM relay lure) -- oleid2 indicator"
+        reference   = "https://github.com/decalage2/oletools/wiki/oleid"
+        score       = "15"
+    strings:
+        $marker = "OLEID-EXTREL" ascii fullword
+    condition:
+        filesize < 64MB and $marker
+}
+
+rule OLEID_OOXML_DDE : maldoc heuristic suspicious
+{
+    meta:
+        author      = "yarad"
+        description = "OOXML document contains DDE/DDEAUTO field instructions -- oleid2 indicator"
+        reference   = "https://github.com/decalage2/oletools/wiki/oleid"
+        score       = "25"
+    strings:
+        $marker = "OLEID-DDE" ascii fullword
+    condition:
+        filesize < 64MB and $marker
+}
+
+rule OLEID_OOXML_XLM_Present : maldoc heuristic suspicious
+{
+    meta:
+        author      = "yarad"
+        description = "OOXML workbook contains an Excel-4.0 (XLM) macrosheet -- oleid2 indicator"
+        reference   = "https://github.com/decalage2/oletools/wiki/oleid"
+        score       = "20"
+    strings:
+        $marker = "OLEID-XLM-PRESENT" ascii fullword
+    condition:
+        filesize < 64MB and $marker
+}

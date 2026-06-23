@@ -32,6 +32,29 @@ func TestExtractOOXMLMacro(t *testing.T) {
 	}
 }
 
+// OLEID-VBA-PRESENT must be emitted for an OOXML workbook that contains
+// decodable VBA macro bins. The marker must appear exactly once (dedup guard).
+func TestOLEIDVBAPresentMarker(t *testing.T) {
+	buf := readFixture(t, "xlswithmacro.xlsm")
+	res := Extract(buf, time.Time{})
+	if res.Failed || res.Panicked {
+		t.Fatalf("unexpected failure flags: %+v", flags(res))
+	}
+	const marker = "OLEID-VBA-PRESENT"
+	count := 0
+	for _, s := range res.Streams {
+		if string(s) == marker {
+			count++
+		}
+	}
+	if count == 0 {
+		t.Errorf("%s marker not emitted for xlswithmacro.xlsm", marker)
+	}
+	if count > 1 {
+		t.Errorf("%s marker emitted %d times (want 1, dedup guard broken)", marker, count)
+	}
+}
+
 // Non-container input (a plain mail body) must extract nothing and not be
 // flagged a document — the scanner then sees only the raw bytes, exactly as
 // before this package existed.

@@ -60,6 +60,10 @@ var parityMarkers = map[string]markerKind{
 	"XLM-AUTO-CLOSE":        contractMarker, // xlm_macrosheet.yara XLM_AutoOpen_Dropper
 	"OLEID-OBJECTPOOL":      contractMarker, // oleid_indicators.yara OLEID_ObjectPool
 	"OLEID-FLASH":           contractMarker, // oleid_indicators.yara OLEID_Flash
+	"OLEID-VBA-PRESENT":     contractMarker, // oleid_indicators.yara OLEID_OOXML_VBA_Present
+	"OLEID-EXTREL":          contractMarker, // oleid_indicators.yara OLEID_OOXML_ExternalRel
+	"OLEID-DDE":             contractMarker, // oleid_indicators.yara OLEID_OOXML_DDE
+	"OLEID-XLM-PRESENT":     contractMarker, // oleid_indicators.yara OLEID_OOXML_XLM_Present
 	"OLE2LINK-URL":          contractMarker, // oleid_indicators.yara OLE2Link_URL_Moniker
 	"OLETIMES-FUTURE":       contractMarker, // oleid_indicators.yara OLETimes_FutureStamp
 	"OLETIMES-SYNTHETIC":    contractMarker, // oleid_indicators.yara OLETimes_SyntheticStamps
