@@ -2,10 +2,13 @@ package yarad
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -513,6 +516,78 @@ func TestMergeMatches(t *testing.T) {
 	if merged[1].Namespace != "fileB.yar" {
 		t.Errorf("cross-namespace same-name match was dropped: %+v", merged)
 	}
+}
+
+// TestScanRaceReload (STAB-10) hammers concurrent Scan() calls while Reload()
+// and ReloadDenylist() fire simultaneously. Run with -race to verify no data
+// races exist in the scanner pool / rule-generation machinery.
+func TestScanRaceReload(t *testing.T) {
+	s := newScanner(t, writeRules(t, eicarRule))
+	benign := []byte("a perfectly innocent email body")
+	benignDigest := sha256.Sum256(benign)
+
+	n := runtime.NumCPU()
+	if n < 2 {
+		n = 2
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	// N goroutines scanning continuously until context expires.
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				_, err := s.Scan(benign, benignDigest, ScanMeta{})
+				if err != nil {
+					// Transient errors (pool exhaustion, rules reloading) are
+					// expected under concurrent reload pressure — skip them.
+					continue
+				}
+			}
+		}()
+	}
+
+	// Fire Reload() several times while scans run.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 5; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			_ = s.Reload() // errors are fine; old ruleset stays active
+			time.Sleep(30 * time.Millisecond)
+		}
+	}()
+
+	// Fire ReloadDenylist() at least once while scans run.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 3; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			s.ReloadDenylist()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
 }
 
 func sameRules(m []Match, want []string) bool {
