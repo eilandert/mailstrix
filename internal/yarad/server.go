@@ -191,6 +191,11 @@ func (s *Server) logStartup(addr string) {
 	} else if limitMiB == 0 && peakMiB > 512 {
 		s.errf("WARNING: max_inflight × max_body alone is ~%d MiB of buffers; lower YARAD_MAX_INFLIGHT or YARAD_MAX_BODY", peakMiB)
 	}
+	if quota := cgroupCPUQuota(); quota > 0 && float64(s.cfg.MaxConcurrent) > quota*1.5 {
+		s.errf("WARNING: max_concurrent=%d but cgroup cpu.max grants only %.1f CPUs; "+
+			"over-subscribing by %.1fx increases latency under load (lower YARAD_MAX_CONCURRENT or raise cpu quota)",
+			s.cfg.MaxConcurrent, quota, float64(s.cfg.MaxConcurrent)/quota)
+	}
 	s.logf("repo: %s", RepoURL)
 }
 
@@ -223,6 +228,29 @@ func cgroupMemLimitMiB() int64 {
 		return n >> 20
 	}
 	return 0
+}
+
+// cgroupCPUQuota returns the cgroup v2 CPU quota in fractional CPUs, or 0 if
+// there is no enforced quota or it can't be read. Format: "$quota $period" where
+// "max" means unlimited; quota/period gives the number of CPUs allotted.
+func cgroupCPUQuota() float64 {
+	b, err := os.ReadFile("/sys/fs/cgroup/cpu.max") // #nosec G304 -- fixed cgroup path
+	if err != nil {
+		return 0
+	}
+	parts := strings.Fields(strings.TrimSpace(string(b)))
+	if len(parts) != 2 || parts[0] == "max" {
+		return 0
+	}
+	quota, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil || quota <= 0 {
+		return 0
+	}
+	period, err := strconv.ParseFloat(parts[1], 64)
+	if err != nil || period <= 0 {
+		return 0
+	}
+	return quota / period
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
