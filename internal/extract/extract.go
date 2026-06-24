@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra"
 
 // Options carries the per-request extraction caps (EFFORT-4) plus the time
 // budget. It is resolved once per scan from the effort level and threaded to the
@@ -473,6 +473,10 @@ func fromOLE(buf []byte, res *Result, bud *archiveBudget, depth int, deadline ti
 		fromOLEEncInfo(ole, res) // ENCRYPTION-AES type marker
 		return
 	}
+	// Flag a payload stapled past the CFB's FAT coverage (a benign-looking
+	// .doc/.xls with a second stage appended after its last allocated sector).
+	// Runs on both the macro and no-macro paths below.
+	fromOLEExtraData(ole, buf, res, deadline)
 	mods, err := oleparse.ExtractMacros(ole)
 	if err != nil {
 		// A macro-extraction error on a real MSI/.msg is expected (no VBA project),
@@ -553,6 +557,65 @@ func fromOLE(buf []byte, res *Result, bud *archiveBudget, depth int, deadline ti
 			fromMSI(ole, res, deadline)
 		}
 	}
+}
+
+// extraDataMinBytes is the smallest trailing blob worth flagging as data appended
+// beyond a CFB's FAT coverage — below this it's just sub-sector padding.
+const extraDataMinBytes = 512
+
+// maxExtraDataCarve bounds how much trailing data is carved for scanning.
+const maxExtraDataCarve = 4 << 20
+
+// fromOLEExtraData flags bytes appended after the last FAT-allocated sector of a
+// CFB compound file (oletools' "extra data after last sector"): a common way to
+// staple a second-stage payload onto a benign-looking .doc/.xls without touching
+// its directory or FAT. It emits an OLE2-EXTRA-DATA marker and carves the trailing
+// blob so content rules scan it in isolation. buf is the original container bytes.
+//
+// Soundness: a sector is allocated iff its FAT entry is not FREESECT; the highest
+// such index is the last meaningful sector, and anything past it is appended.
+// Trailing free sectors (all-zero padding) are NOT flagged — only a non-zero blob
+// is, which keeps benign over-allocated containers from tripping the marker.
+func fromOLEExtraData(ole *oleparse.OLEFile, buf []byte, res *Result, deadline time.Time) {
+	if ole == nil || expired(deadline) || ole.SectorSize <= 0 || len(res.Streams) >= maxStreams {
+		return
+	}
+	last := -1
+	for i, v := range ole.Fat {
+		if v != oleparse.FREESECT {
+			last = i
+		}
+	}
+	if last < 0 {
+		return
+	}
+	// Sector i spans bytes [SectorSize*(i+1), SectorSize*(i+2)) — the 512-byte
+	// header is "sector -1" (see oleparse ReadSector). Coverage ends after `last`.
+	covered := ole.SectorSize * (last + 2)
+	if covered <= 0 || covered >= len(buf) {
+		return
+	}
+	tail := buf[covered:]
+	if len(tail) < extraDataMinBytes || allZero(tail) {
+		return // sub-sector padding or free-sector zeros — not an appended payload
+	}
+	res.Streams = append(res.Streams, []byte("OLE2-EXTRA-DATA"))
+	if len(tail) > maxExtraDataCarve {
+		tail = tail[:maxExtraDataCarve]
+	}
+	if len(res.Streams) < maxStreams {
+		res.Streams = append(res.Streams, append([]byte(nil), tail...))
+	}
+}
+
+// allZero reports whether b is entirely zero bytes (CFB free-sector padding).
+func allZero(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // fromMSI recognises a Windows Installer database (OLE2 root CLSID == MSI) and

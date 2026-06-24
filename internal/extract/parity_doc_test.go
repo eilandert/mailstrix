@@ -90,6 +90,7 @@ var parityMarkers = map[string]markerKind{
 	// --- carved-payload labels (scanned by existing keyword/IOC rules; no own rule) ---
 	"DOCPROPS-STRINGS": internalMarker,
 	"USERFORM-STRINGS": internalMarker,
+	"OLE2-EXTRA-DATA":  internalMarker, // label on data appended past FAT coverage; carved tail scanned by content rules
 }
 
 // markerEmitRe matches a synthetic marker prefix inside a Go string or []byte
