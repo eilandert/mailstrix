@@ -560,17 +560,17 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 
 - [x] VBA string folds at `olevba` parity: `Chr`/`Replace`/`Array Xor`/`StrReverse("lit")`/`Environ`→marker + **Dridex** `DridexUrlDecode`
 - [x] `oleid` structural indicators: embedded-OLE `ObjectPool` + Flash/SWF markers
-- [ ] **Multi-stage deobfuscation** — bounded recursive decode (depth ~4) so a 2+-layer payload (Dridex-style) is unwound, not just the first layer; the remaining `olevba` edge over yarad
-- [ ] **BIFF8/`.xlsb`/SLK XLM folding** — static `ptg`-token string reassembly for legacy/binary/SLK macrosheets (OOXML `.xlsm` already folds), fuzz-gated
-- [ ] **PDF action/JS triage** — `/OpenAction`+`/JS`, `/AA`, `/Launch`, `/EmbeddedFile`, `/JBIG2Decode`, hex-name de-obfuscation markers (oletools has no PDF triage; this leads it)
-- [ ] CFB orphan/timestamp indicators (`oledir`/`oletimes`: unreferenced dir entries carved + scanned, FILETIME anomalies)
-- [ ] Encryption-type + digital-signature markers (`ENCRYPTION-<RC4|XOR|AES>`, `DIGITAL-SIGNATURE`)
-- [ ] Parse-robustness hardening (explicit CFB block-bounds / chain-loop / recursion / module-count guards; pathological-input fuzz)
+- [x] **Multi-stage deobfuscation** — bounded recursive decode (depth ~4) so a 2+-layer payload (Dridex-style) is unwound, not just the first layer; now **leads** `olevba` (single-pass)
+- [x] **BIFF8/`.xlsb`/SLK XLM folding** — static `ptg`-token string reassembly for legacy/binary/SLK macrosheets (OOXML `.xlsm` already folds), fuzz-gated; plus a **bounded XLM emulator** (control flow + iterative cell eval, five runaway fuses) for cell-ref/`SET.VALUE`/`GOTO` resolution
+- [x] **PDF action/JS triage** — `/OpenAction`+`/JS`, `/AA`, `/Launch`, `/EmbeddedFile`, `/JBIG2Decode`, hex-name de-obfuscation markers (oletools has no PDF triage; this leads it)
+- [x] CFB orphan/timestamp indicators (`oledir`/`oletimes`: unreferenced dir entries carved + scanned, FILETIME anomalies)
+- [x] Encryption-type + digital-signature markers (`ENCRYPTION-<RC4|XOR|AES>`, `DIGITAL-SIGNATURE`); plus default-password decryption (VelvetSweatshop XOR, BIFF8 RC4, OOXML agile/standard AES) so encrypted-but-default payloads are decrypted and re-scanned
+- [x] Parse-robustness hardening (CFB block-bounds / chain-loop / recursion / module-count guards; `oleparse` decompress-bomb 32 MiB cap + 4096-module guard; pathological-input fuzz)
 - [x] `olevba`-parity matrix doc + CI check ([oletools parity matrix](#oletools-parity-matrix) above; `internal/extract/parity_doc_test.go` asserts every CONTRACT marker has a scoring rule and that the inventory is exhaustive)
 
 **Performance / operations**
 
-- [~] **Effort tiers** — config + resolution + cache key + profile struct (EFFORT-1), `YARAD_EFFORT=auto` from admission-gate pressure (EFFORT-2), and the rspamd plugin setting `X-YARAD-Effort` from the sender's prior score / auth-failure symbols (EFFORT-3, opt-in via `effort_enabled`) all landed; EFFORT-4 wires each extraction/scan cap (decode depth, XLM/PDF clamps, reputation feeds, scan timeout) to read the resolved profile so the dial actually scales work
+- [x] **Effort tiers** — config + resolution + cache key + profile struct (EFFORT-1), `YARAD_EFFORT=auto` from admission-gate pressure (EFFORT-2), the rspamd plugin setting `X-YARAD-Effort` from the sender's prior score / auth-failure symbols (EFFORT-3, opt-in via `effort_enabled`), and EFFORT-4 wiring each extraction/scan cap (decode depth, XLM/PDF clamps, reputation feeds, scan timeout) to the resolved profile so the dial actually scales work
 - [ ] Batch `/scan` endpoint (collapse N part round-trips)
 
 **Other planned**
@@ -580,6 +580,7 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 - [ ] CHM / CAB / MSIX extraction
 - [ ] Extractor sandbox hardening (seccomp/rlimits)
 - [ ] PE-overlay bytes; `.url`/`.settingcontent-ms` launcher fields
+- [ ] Known-bad-CLSID content rule — e.g. `EAB22AC3-30C1-11CF-A7EB-0000C05BAE0B` (Shell.Explorer, CVE-2026-21509; only upstream `oletools` addition since the parity baseline). Actionable form = a YARA rule on the GUID bytes in OLE/RTF/OOXML, not a forensic name table; sample-gated
 
 > Disk-image (ISO/UDF/`.dmg`/`.pkg`) and Android `.apk` are intentionally out of
 > scope — not a realistic executable mail vector, and high-attack-surface
