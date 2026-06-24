@@ -61,6 +61,7 @@ type Scanner struct {
 	bigSrcFile       string        // YARAD_BIGFILE_RULES when it is a precompiled .yac
 	bigNilWarned     atomic.Bool   // log the "bigRules nil, falling back" path once
 	bigFileScans     atomic.Uint64 // oversized buffers scanned against bigRules
+	rawScanErrs      atomic.Uint64 // raw-scan failures that fell through to extraction instead of aborting
 
 	// scanners pools yara.Scanner objects so a scan that overrides external
 	// variables (VBA/filename — every macro stream) doesn't allocate and
@@ -357,6 +358,11 @@ func (s *Scanner) RuleCount() int64 { return s.count.Load() }
 // big-file (targeted) ruleset instead of the full set (BIGFILE gate). Surfaced on
 // /metrics so the gate's firing rate is observable.
 func (s *Scanner) BigFileScans() uint64 { return s.bigFileScans.Load() }
+
+// RawScanErrs reports how many raw scans failed (timeout/libyara error) and fell
+// through to extraction instead of aborting the request. Surfaced on /metrics so
+// the fail-open-recovery path is observable.
+func (s *Scanner) RawScanErrs() uint64 { return s.rawScanErrs.Load() }
 
 // ReloadMetrics is a snapshot of rule-reload activity, surfaced on /metrics so a
 // SIGHUP that silently fails (e.g. a bad rule edit) is visible to alerting
@@ -837,9 +843,21 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 	// fail-open at the server) — unchanged behaviour for non-documents. Over the
 	// big-file threshold, rawRules is the targeted set (see the gate above);
 	// otherwise it is the full set.
-	out, err := s.scanOne(rawRules, buf, scanVars{filename: meta.Filename, extension: meta.Extension, fileType: meta.FileType}, profile.ScanTimeout)
-	if err != nil {
-		return nil, err
+	out, rawErr := s.scanOne(rawRules, buf, scanVars{filename: meta.Filename, extension: meta.Extension, fileType: meta.FileType}, profile.ScanTimeout)
+	// A raw-scan failure (timeout on a pathologically slow buffer, or a libyara
+	// error) must NOT short-circuit extraction: a hostile outer container can be
+	// engineered to blow the raw-scan budget while hiding a clear-signal dropper
+	// in a macro/embedded stream, and returning here would fail open and miss it.
+	// Instead drop the (absent) raw matches and continue to extraction + the
+	// reputation feeds below; the extracted streams are small and fast and run
+	// under whatever deadline remains (each scanExtracted short-circuits when the
+	// shared budget is gone, so this can never spend more wall-clock). If nothing
+	// is recovered downstream the original error is returned at the end, so the
+	// non-document fail-open contract is unchanged.
+	if rawErr != nil {
+		s.rawScanErrs.Add(1)
+		s.logf("raw scan failed (%v); continuing to extraction so hidden streams are not missed", rawErr)
+		out = nil
 	}
 	// Phase 2 marker-channel: a PURE-marker rule must NOT fire on raw bytes (the
 	// literal is yarad-synthetic; a match here means an attacker planted it).
@@ -1018,6 +1036,13 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 		for _, stream := range res.Streams {
 			addHits(stream)
 		}
+	}
+	// The raw scan failed but extraction/feeds recovered nothing: preserve the
+	// original fail-open-with-error contract (the server logs it as "no match").
+	// When something WAS recovered, the matches stand — that is the whole point of
+	// not short-circuiting on the raw error above.
+	if rawErr != nil && len(out) == 0 {
+		return nil, rawErr
 	}
 	return out, nil
 }
