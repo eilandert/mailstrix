@@ -295,7 +295,8 @@ jobs:
           # Adversarial: a RAW body planting both marker literals must NOT fire the
           # now-tagged dropper (marker-tagged hits rejected on raw/content).
           adv=$(printf 'XLM-HIDDEN-MACROSHEET veryHidden\nXLM-DANGEROUS-FUNC CALL\n' | curl -s -H "X-YARAD-Token: ci" --data-binary @- http://127.0.0.1:18094/scan)
-          echo "adv: $adv"; grep -q XLM_Hidden_Dangerous_Dropper <<<"$adv" && { echo "ERROR: tagged dropper fired on raw"; exit 1; } || true
+          echo "adv: $adv"
+          if grep -q XLM_Hidden_Dangerous_Dropper <<<"$adv"; then echo "ERROR: tagged dropper fired on raw"; exit 1; fi
 
           # Negative: plain body with no marker must NOT fire.
           clean=$(printf 'just a plain document body\n' | curl -s -H "X-YARAD-Token: ci" --data-binary @- http://127.0.0.1:18094/scan)
