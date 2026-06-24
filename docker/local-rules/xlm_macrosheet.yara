@@ -77,7 +77,11 @@ rule XLM_Emulator_Deep_Exec : maldoc heuristic marker
         description = "XLM macro with CALL in a looped or branched execution path — evasion indicator"
         score       = "75"
     strings:
-        $call         = "CALL" ascii nocase
+        // Require the qualified yarad marker, not a bare "CALL" — the latter
+        // matches sheet names / unrelated text inside the XLM-STACK buffer and
+        // fires the rule on co-located looped/branched markers without an actual
+        // CALL. The fold emits "XLM-DANGEROUS-FUNC CALL" for a real CALL ptg.
+        $call         = "XLM-DANGEROUS-FUNC CALL" ascii
         $looped       = "XLM-EMUL-DEPTH looped" ascii
         $branched     = "XLM-EMUL-DEPTH branched" ascii
     condition:
