@@ -34,3 +34,17 @@ rule Polyglot_PE_ZIP : polyglot evasion heuristic malware marker
     condition:
         filesize < 16MB and $marker
 }
+
+rule XLL_AddIn : xll office heuristic suspicious marker
+{
+    meta:
+        author      = "yarad"
+        description = "Excel XLL add-in (PE DLL exporting xlAutoOpen) — runs code on load with no macro prompt; an emailed .xll is a known phishing vector"
+        reference   = "https://attack.mitre.org/techniques/T1137/006/"
+        tier        = "suspicious"
+        score       = "70"
+    strings:
+        $marker = "XLL-ADDIN" ascii
+    condition:
+        filesize < 16MB and $marker
+}

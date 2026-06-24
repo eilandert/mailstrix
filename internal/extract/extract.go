@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra+htmlsmuggle+encarchive+polyglot"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra+htmlsmuggle+encarchive+polyglot+xll"
 
 // Options carries the per-request extraction caps (EFFORT-4) plus the time
 // budget. It is resolved once per scan from the effort level and threaded to the
@@ -257,6 +257,10 @@ type Result struct {
 	// runs the PE. The POLYGLOT-PE-ZIP marker is emitted; extraction is not
 	// re-routed.
 	Polyglot bool
+	// IsXLL is true when buf is a PE that exports the Excel XLL add-in callback
+	// contract (xlAutoOpen): an Excel add-in DLL, which runs code on load without
+	// a macro prompt. The XLL-ADDIN marker is emitted.
+	IsXLL bool
 	// IsRTF is true when buf was recognised as an RTF document whose \objdata
 	// embedded-object groups were hex-decoded and carved for scanning.
 	IsRTF bool
@@ -417,6 +421,13 @@ func ExtractWithOptions(buf []byte, opts *Options) (res Result) {
 	// contradiction itself is scored. Self-gating (requires two valid structures),
 	// so it is safe on arbitrary input.
 	fromPolyglot(buf, &res)
+
+	// Excel XLL add-in: a PE DLL that Excel loads as an add-in, running attacker
+	// code via the xlAutoOpen entry point with no macro prompt. Top-level check on
+	// the original buffer (the .xll attachment is the PE itself). Self-gating on a
+	// valid PE header AND the mandatory XLL export name, so it is safe to run on
+	// any input.
+	fromXLL(buf, &res)
 
 	// After the format-specific extraction, run the single-layer static decode
 	// pass over the raw buffer AND every stream surfaced above, so a base64/hex/
