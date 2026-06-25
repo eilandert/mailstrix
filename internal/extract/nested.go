@@ -45,7 +45,16 @@ func extractChild(data []byte, res *Result, b *archiveBudget, depth int, deadlin
 		// XML would scan ordinary text and invite FPs (mirror the top-level guard);
 		// a plain archive gets member unpacking.
 		if isOfficeZip(data) {
-			fromOOXML(data, res, deadline, nil)
+			// Thread the request's effort/decode/XLM-fold caps into the nested OOXML
+			// (same as the PDF branch below). With nil opts the XLM-fold sheet/formula
+			// caps fall back to the package MAX, so a nested .docm/.xlsm did MORE fold
+			// work than a low-effort request asked for — effort could only be shed at
+			// the top level, never on a carried Office doc. res.childOpts carries the
+			// caps; the call's own deadline is the live budget, so it is passed
+			// separately and overrides childOpts.Deadline. nil childOpts (top-level
+			// Extract / tests building Result directly) keeps the prior MAX-cap
+			// behaviour via the opts accessors' nil fallback.
+			fromOOXML(data, res, deadline, res.childOpts)
 		} else {
 			fromArchive(data, res, b, depth, deadline)
 		}

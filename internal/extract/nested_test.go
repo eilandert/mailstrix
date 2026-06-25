@@ -223,6 +223,56 @@ func TestNestedZIPPDFChildHonorsEffortPDFDeepen(t *testing.T) {
 	}
 }
 
+// An OOXML (.xlsm) nested inside a ZIP must honor the request's XLM-fold formula
+// cap threaded via res.childOpts. Before the fix, extractChild passed nil opts to
+// fromOOXML, so the XLM-fold caps fell back to the package MAX and a nested Office
+// doc folded MORE than a low-effort request asked for. Wrap a macrosheet with many
+// fold formulas in an outer zip, extract once at FULL effort and once with a low
+// XLMFoldFormulas, and assert the low-effort nested fold sheds work.
+func TestNestedZIPOOXMLChildHonorsXLMFoldCap(t *testing.T) {
+	const lowCap = 8
+	const nFormulas = lowCap + 60
+	formulas := make([]string, nFormulas)
+	for i := range formulas {
+		// Each folds to a distinct https URL stream so fold streams are countable.
+		formulas[i] = `=CHAR(104)&CHAR(116)&CHAR(116)&CHAR(112)&CHAR(115)&CHAR(58)&CHAR(47)&CHAR(47)&"evil.com"`
+	}
+	xlsm := makeOOXMLWithXLMFold(t, formulas)
+	outerZip := buildZip(t, map[string][]byte{"book.xlsm": xlsm})
+
+	// Full effort: the nested fold runs up to the package cap → many fold streams.
+	resFull := ExtractWithOptions(outerZip, FullOptions(time.Time{}))
+	full := countFoldURLStreams(resFull.Streams)
+
+	// Low effort: childOpts must reach the nested OOXML and shed the fold well
+	// below the full-effort count.
+	optsLow := *FullOptions(time.Time{})
+	optsLow.XLMFoldFormulas = lowCap
+	resLow := ExtractWithOptions(outerZip, &optsLow)
+	low := countFoldURLStreams(resLow.Streams)
+
+	if full < lowCap+10 {
+		t.Fatalf("setup: full-effort nested fold produced too few streams (%d) to show shedding", full)
+	}
+	if low >= full {
+		t.Errorf("nested OOXML did not honor XLMFoldFormulas cap: low=%d full=%d (childOpts not threaded)", low, full)
+	}
+	if low > lowCap+5 {
+		t.Errorf("low-effort nested fold did not shed near the cap: got %d, cap %d", low, lowCap)
+	}
+}
+
+// countFoldURLStreams counts the folded-URL streams emitted by the XLM fold pass.
+func countFoldURLStreams(streams [][]byte) int {
+	n := 0
+	for _, s := range streams {
+		if bytes.Contains(s, []byte("https://evil.com")) {
+			n++
+		}
+	}
+	return n
+}
+
 // Deeply nested carriers must terminate at the depth cap, never recurse without
 // end. Nine gzip layers wrap a payload; the cap (maxNestDepth) is well below 9,
 // so the innermost payload is NOT reached — and the call must return (the test
