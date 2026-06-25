@@ -52,6 +52,7 @@ var parityMarkers = map[string]markerKind{
 	"SLK-DDE":                contractMarker, // ooxml_dde.yara SLK_DDE_Command
 	"OOXML-DDE-FIELD":        contractMarker, // ooxml_dde.yara Maldoc_DDE_Field
 	"OOXML-EXTERNAL-REL":     contractMarker, // ooxml_template_injection.yara
+	"OOXML-MHTML-REL":        contractMarker, // ooxml_template_injection.yara OOXML_MHTML_Scheme
 	"RTF-DDE-FIELD":          contractMarker, // rtf_tricks.yara RTF_DDE_Field
 	"RTF-OBJUPDATE":          contractMarker, // rtf_tricks.yara RTF_ObjUpdate
 	"XLM-DANGEROUS-FUNC":     contractMarker, // xlm_macrosheet.yara XLM_Dangerous_Function
