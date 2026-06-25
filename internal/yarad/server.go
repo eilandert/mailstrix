@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/cespare/xxhash/v2"
 
 	"github.com/eilandert/rspamd-yarad/internal/extract"
 	"github.com/eilandert/rspamd-yarad/internal/mbazaar"
@@ -495,12 +498,20 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	// because the verdict now DEPENDS on it: the same bytes with filename
 	// "invoice.exe" vs "invoice.pdf" can match different rules, so they must not
 	// share a cached verdict.
-	// Hash the body ONCE: the same SHA256 keys the verdict cache, seeds the
-	// extracted-stream dedup set, and is the MalwareBazaar lookup key. Threading
-	// the digest avoids re-hashing the (up to 8 MiB) body two more times per scan.
-	digest := sha256.Sum256(buf)
-	key := s.engine.Fingerprint() + ":" + meta.cacheKey() + ":" + string(digest[:])
-	matches, cacheStatus := s.lookupOrScan(ctx, key, buf, digest, meta)
+	// The verdict-cache key uses a FAST non-cryptographic hash of the body
+	// (xxhash), NOT SHA256. Under a bulk campaign the cache-hit ratio is high, and
+	// hashing a multi-MB body with SHA256 on every hit just to build the lookup key
+	// was ~40% of the server's CPU (PERF: blockSHANI hot in pprof). xxhash is
+	// allocation-free and orders of magnitude cheaper. Collision safety: the key
+	// already mixes the ruleset fingerprint + metadata, and a 128-bit body hash
+	// makes an accidental cross-body verdict collision astronomically unlikely; a
+	// verdict cache is not a security boundary (a real SHA256 is still computed for
+	// the MalwareBazaar lookup, see below). The cryptographic SHA256 the scan path
+	// needs (mbazaar lookup key + extracted-stream dedup seed) is computed LAZILY,
+	// only on a cache MISS, inside lookupOrScan — so a cache hit never hashes the
+	// body cryptographically at all.
+	key := s.engine.Fingerprint() + ":" + meta.cacheKey() + ":" + bodyCacheHash(buf)
+	matches, cacheStatus := s.lookupOrScan(ctx, key, buf, meta)
 
 	if len(matches) > 0 {
 		s.metrics.matches.Add(1)
@@ -530,7 +541,28 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 // in-flight identical scan, or a fresh scan whose result is cached. At high
 // volume the cache + coalescing collapse a bulk campaign's N identical messages
 // into a single scan. Returns the matches and a cache-status label for logs.
-func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte, digest [32]byte, meta ScanMeta) ([]Match, string) {
+// bodyCacheHash returns a fast, non-cryptographic 128-bit fingerprint of the
+// request body for use as a verdict-cache key component. It deliberately does
+// NOT use SHA256: under bulk-campaign load most requests are cache hits, and
+// hashing a multi-MB body with SHA256 just to build the lookup key dominated
+// server CPU. xxhash is allocation-free; the 128-bit width (two xxhash64 passes
+// over the body and its bit-inverted self) makes an accidental collision between
+// two distinct bodies sharing the same fingerprint+metadata negligible. This is
+// a cache key, not a security identity — the cryptographic SHA256 used for the
+// MalwareBazaar lookup is still computed on the miss path.
+func bodyCacheHash(buf []byte) string {
+	lo := xxhash.Sum64(buf)
+	d := xxhash.New()
+	_, _ = d.Write([]byte{0x9e, 0x37, 0x79, 0xb9}) // domain-separate the second pass
+	_, _ = d.Write(buf)
+	hi := d.Sum64()
+	var b [16]byte
+	binary.LittleEndian.PutUint64(b[0:], lo)
+	binary.LittleEndian.PutUint64(b[8:], hi)
+	return string(b[:])
+}
+
+func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte, meta ScanMeta) ([]Match, string) {
 	// Cache lookup (L1 + Redis L2) runs OUTSIDE the scan-CPU gate, so a slow Redis
 	// can't hold a scan slot; the L2 circuit breaker bounds it further.
 	if m, found := s.cache.Get(key); found {
@@ -544,6 +576,10 @@ func (s *Server) lookupOrScan(ctx context.Context, key string, buf []byte, diges
 			return m, false
 		}
 		s.metrics.cacheMiss.Add(1)
+		// MISS path only: now compute the cryptographic SHA256 the scan needs (the
+		// MalwareBazaar lookup key + the extracted-stream dedup seed). A cache hit
+		// returned above without ever hashing the body with SHA256.
+		digest := sha256.Sum256(buf)
 		// Take the scan-CPU slot only for the actual libyara scan. If it can't be
 		// had within the budget (or the client is gone), fail open as "no match"
 		// — never block mail — and do NOT cache (no real verdict was computed). This

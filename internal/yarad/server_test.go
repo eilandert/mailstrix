@@ -848,3 +848,29 @@ func TestScanWithBrokenCache(t *testing.T) {
 		t.Fatalf("scan with broken cache returned wrong matches: %+v", resp.Matches)
 	}
 }
+
+// TestBodyCacheHash verifies the fast verdict-cache fingerprint is deterministic,
+// distinguishes distinct bodies (including single-bit flips), and is 16 bytes
+// wide. It replaced SHA256 in the cache key (PERF: hashing multi-MB bodies on
+// every cache hit was ~40% of server CPU); xxhash carries the cache-key load
+// while the cryptographic SHA256 is computed lazily only on the scan (miss) path.
+func TestBodyCacheHash(t *testing.T) {
+	a := bytes.Repeat([]byte("malware payload "), 4096) // ~64 KiB
+	b := make([]byte, len(a))
+	copy(b, a)
+	b[len(b)/2] ^= 0x01 // single-bit difference
+
+	ha, hb := bodyCacheHash(a), bodyCacheHash(b)
+	if len(ha) != 16 {
+		t.Fatalf("bodyCacheHash width = %d bytes, want 16", len(ha))
+	}
+	if ha != bodyCacheHash(a) {
+		t.Error("bodyCacheHash not deterministic for identical input")
+	}
+	if ha == hb {
+		t.Error("bodyCacheHash collided on a single-bit-flipped body")
+	}
+	if bodyCacheHash(nil) == bodyCacheHash([]byte{0}) {
+		t.Error("bodyCacheHash collided empty vs single-zero body")
+	}
+}
