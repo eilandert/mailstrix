@@ -1,6 +1,7 @@
 package yarad
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -276,6 +277,43 @@ func TestScanMatchesMacroViaDecompressedStream(t *testing.T) {
 	}
 	if len(m) != 1 || m[0].Rule != "VBA_Macro_Attribute" {
 		t.Fatalf("macro rule did not fire via decompressed stream: %+v", m)
+	}
+}
+
+// #5 regression: a VBA-gated rule must fire on the decompressed macro source
+// (VBA=true for that stream) but must NOT fire on a non-VBA extracted stream that
+// happens to carry the same keyword — here a plain .txt archive member. Before
+// the fix every extracted stream scanned with VBA=true, so the archive member
+// falsely satisfied the gate (a false positive).
+func TestScanVBAGatedOnlyOnMacroStream(t *testing.T) {
+	// strip the console import line — newScanner compiles a single rule file and
+	// console may be unavailable; keep the rule self-contained.
+	rule := `rule VBA_Gated { strings: $kw = "Attribute VB_Name" condition: VBA and $kw }`
+	s := newScanner(t, writeRules(t, rule))
+
+	// (a) Macro doc → VBA stream carries the keyword AND VBA is set → fires.
+	if m, err := scanT(s, macroDoc(t), ScanMeta{}); err != nil || len(m) != 1 || m[0].Rule != "VBA_Gated" {
+		t.Fatalf("(a) VBA-gated rule must fire on the real macro stream: %+v err=%v", m, err)
+	}
+
+	// (b) A zip whose member is a plain .txt containing the same keyword →
+	// extracted as a NON-VBA archive member → VBA must be false → no match.
+	var zb bytes.Buffer
+	zw := zip.NewWriter(&zb)
+	w, err := zw.Create("notes.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("harmless text that mentions Attribute VB_Name in passing")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if m, err := scanT(s, zb.Bytes(), ScanMeta{}); err != nil {
+		t.Fatalf("(b) scan error: %v", err)
+	} else if len(m) != 0 {
+		t.Fatalf("(b) VBA-gated rule wrongly fired on a non-VBA archive member (FP): %+v", m)
 	}
 }
 

@@ -966,6 +966,15 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 	// the raw bytes is also skipped (it can't add new matches).
 	seen := make(map[[16]byte]struct{})
 	seen[streamDedupKey(buf)] = struct{}{} // xxhash the body once so a stream byte-identical to the raw body is skipped (PERF-3)
+	// vbaKeys identifies the genuine VBA macro-source streams (the extractor's
+	// codes() output) by content hash, so the VBA external is set ONLY for those.
+	// Previously every extracted stream scanned with VBA=true, over-firing
+	// VBA-gated rules (`VBA and any of(...)`) on PDF/archive/script/marker/decoded
+	// content (false positives). Markers are never VBA.
+	vbaKeys := make(map[[16]byte]struct{}, len(res.VBAStreams))
+	for _, vs := range res.VBAStreams {
+		vbaKeys[streamDedupKey(vs)] = struct{}{}
+	}
 	// scanExtracted runs one extracted entry (real content stream OR an out-of-band
 	// marker) through dedup, the shared scan budget, and merge. Returns true when
 	// the budget is exhausted so the caller stops the whole sweep. Markers and
@@ -985,11 +994,18 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 				return true
 			}
 		}
-		// VBA=true so the macro-keyword rules (Didier vba.yara: `VBA and any of
-		// (...)`) fire on this decompressed source — they are inert on raw bytes.
-		// filename/extension carry through so a name-keyed rule fires the same on
-		// the container's decompressed macros as on its raw bytes.
-		m, serr := s.scanOne(rules, stream, scanVars{vba: true, filename: meta.Filename, extension: meta.Extension, fileType: meta.FileType}, budget)
+		// Set the VBA external ONLY when this stream is genuine VBA macro source
+		// (vbaKeys membership), so the macro-keyword rules (Didier vba.yara: `VBA and
+		// any of(...)`) fire on decompressed macros — inert on raw bytes — but NOT on
+		// a PDF/archive/script/marker/decoded stream that merely happens to contain a
+		// macro keyword. A marker-channel entry is never VBA. filename/extension carry
+		// through so a name-keyed rule fires the same on the container's decompressed
+		// macros as on its raw bytes.
+		isVBA := false
+		if !markerChannel {
+			_, isVBA = vbaKeys[h]
+		}
+		m, serr := s.scanOne(rules, stream, scanVars{vba: isVBA, filename: meta.Filename, extension: meta.Extension, fileType: meta.FileType}, budget)
 		if serr != nil {
 			s.logf("scan of extracted stream failed (raw verdict kept): %v", serr)
 			return false

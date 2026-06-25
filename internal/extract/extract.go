@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra+htmlsmuggle+encarchive+polyglot+xll+htmlnested+encarchivehdr+onenoterec+rtfcfbole+fmtcaplocal+csvquote+nestedooxmlopts+ddeparts+oleidorder+utf16decode"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra+htmlsmuggle+encarchive+polyglot+xll+htmlnested+encarchivehdr+onenoterec+rtfcfbole+fmtcaplocal+csvquote+nestedooxmlopts+ddeparts+oleidorder+utf16decode+vbastream"
 
 // Options carries the per-request extraction caps (EFFORT-4) plus the time
 // budget. It is resolved once per scan from the effort level and threaded to the
@@ -289,6 +289,15 @@ type Result struct {
 	// macro/extracted-stream metrics aren't inflated by decode output. >0 means
 	// the pass fired.
 	DecodedStreams int
+
+	// VBAStreams holds the decompressed VBA macro-source streams (the codes()
+	// output) — a SUBSET of Streams, by content identity. The scanner sets the VBA
+	// external variable ONLY when scanning a stream in this set, so VBA-gated rules
+	// (`VBA and any of(...)`) fire on real macro source and not on every other
+	// extracted stream (PDF/archive/script/marker/decoded), which previously caused
+	// false positives. Entries share their backing array with the matching Streams
+	// entry, so a content-hash membership test identifies them.
+	VBAStreams [][]byte
 
 	// childOpts carries the request's effort Options down the nested-carrier walk
 	// (extractChild) so a nested PDF honors the same PDFDeepen / DecodeDepth /
@@ -545,7 +554,7 @@ func fromOLE(buf []byte, res *Result, bud *archiveBudget, depth int, deadline ti
 	// in a .msg attachment / Ole10Native payload / RTF object / archive member via
 	// extractChild) res.Streams already holds the parent's and siblings' streams —
 	// seeding codes() with the existing slice preserves them instead of erasing.
-	res.Streams = codes(mods, res.Streams)
+	res.Streams = codes(res, mods, res.Streams)
 	// Detect VBA stomping: substantial p-code but trivial/missing source.
 	// Emits "VBA-STOMPED <name> pcode=<n> src=<n>" markers for YARA matching.
 	detectStomping(ole, res, deadline)
@@ -844,7 +853,7 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time, opts *Options) {
 			failedBins++ // one unparseable .bin must not lose the others
 			continue
 		}
-		out = codes(mods, out)
+		out = codes(res, mods, out)
 		if len(out) >= maxStreams {
 			break
 		}
@@ -1299,7 +1308,7 @@ func readZipEntry(f *zip.File) []byte {
 // maxBytesPerModule (one bomb module can't dominate), and maxTotalCode (the sum
 // across modules). A crafted vbaProject.bin with thousands of modules or a
 // decompression bomb therefore cannot OOM the container through res.Streams.
-func codes(mods []*oleparse.VBAModule, out [][]byte) [][]byte {
+func codes(res *Result, mods []*oleparse.VBAModule, out [][]byte) [][]byte {
 	total := 0
 	for _, b := range out {
 		total += len(b)
@@ -1322,7 +1331,15 @@ func codes(mods []*oleparse.VBAModule, out [][]byte) [][]byte {
 		if rem := maxTotalCode - total; n > rem {
 			n = rem
 		}
-		out = append(out, []byte(m.Code[:n]))
+		b := []byte(m.Code[:n])
+		out = append(out, b)
+		// Record this as genuine VBA macro source so the scanner sets the VBA
+		// external ONLY for these streams. Without it the scanner set VBA=true on
+		// EVERY extracted stream (PDF text, archive members, decoded blobs, markers)
+		// → VBA-gated rules (`VBA and any of(...)`) over-fired on non-VBA content (FP).
+		if res != nil {
+			res.VBAStreams = append(res.VBAStreams, b)
+		}
 		total += n
 	}
 	return out

@@ -146,7 +146,7 @@ func TestVersionSet(t *testing.T) {
 func TestCodesBounded(t *testing.T) {
 	// One oversized module is truncated to maxBytesPerModule, not copied whole.
 	huge := oleparse.VBAModule{Code: string(make([]byte, maxBytesPerModule+4096))}
-	out := codes([]*oleparse.VBAModule{&huge}, nil)
+	out := codes(nil, []*oleparse.VBAModule{&huge}, nil)
 	if len(out) != 1 {
 		t.Fatalf("want 1 stream, got %d", len(out))
 	}
@@ -159,7 +159,7 @@ func TestCodesBounded(t *testing.T) {
 	for i := range many {
 		many[i] = &oleparse.VBAModule{Code: "x"}
 	}
-	if got := len(codes(many, nil)); got > maxStreams {
+	if got := len(codes(nil, many, nil)); got > maxStreams {
 		t.Errorf("stream-count cap breached: got %d, want <= %d", got, maxStreams)
 	}
 
@@ -169,7 +169,7 @@ func TestCodesBounded(t *testing.T) {
 	for i := range big {
 		big[i] = &oleparse.VBAModule{Code: string(make([]byte, 1<<20))}
 	}
-	out = codes(big, nil)
+	out = codes(nil, big, nil)
 	total := 0
 	for _, b := range out {
 		total += len(b)
@@ -289,5 +289,38 @@ func TestOLEIDXLMPresent_NoFalseMarkerFromDocProps(t *testing.T) {
 	// actually reachable in this test.
 	if !res.HasDocProps {
 		t.Errorf("setup: docProps not processed; markers=%v", res.Markers)
+	}
+}
+
+// TestVBAStreamsPopulatedOnlyByMacros is the #5 regression (extract half): a real
+// macro document must record its decompressed VBA modules in res.VBAStreams (a
+// subset of Streams), and a non-macro container must leave VBAStreams empty — so
+// the scanner can set the VBA external only for genuine macro source.
+func TestVBAStreamsPopulatedOnlyByMacros(t *testing.T) {
+	// Macro workbook → VBAStreams non-empty, every entry also present in Streams.
+	macro := Extract(readFixture(t, "xlswithmacro.xlsm"), time.Time{})
+	if len(macro.VBAStreams) == 0 {
+		t.Fatal("macro workbook produced no VBAStreams")
+	}
+	inStreams := func(b []byte) bool {
+		for _, s := range macro.Streams {
+			if bytes.Equal(s, b) {
+				return true
+			}
+		}
+		return false
+	}
+	for i, vs := range macro.VBAStreams {
+		if !inStreams(vs) {
+			t.Errorf("VBAStreams[%d] not found in Streams (must be a subset)", i)
+		}
+	}
+
+	// A non-macro container (a DDE-field doc, no vbaProject.bin) → no VBAStreams,
+	// even though it produces extracted streams (the DDE marker etc.).
+	ddeDoc := makeOOXMLWithDocument(t, `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:fldSimple w:instr="DDEAUTO c:\Windows\System32\cmd.exe /k calc"/></w:p></w:body></w:document>`)
+	nonMacro := Extract(ddeDoc, time.Time{})
+	if len(nonMacro.VBAStreams) != 0 {
+		t.Errorf("non-macro doc recorded %d VBAStreams (want 0)", len(nonMacro.VBAStreams))
 	}
 }

@@ -171,6 +171,6 @@ func pptExtractEOS(body []byte, inst uint16, res *Result, deadline time.Time) {
 		return
 	}
 
-	res.Streams = codes(mods, res.Streams)
+	res.Streams = codes(res, mods, res.Streams)
 	detectStomping(subOLE, res, deadline)
 }
