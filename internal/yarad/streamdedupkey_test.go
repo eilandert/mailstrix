@@ -13,14 +13,12 @@ import (
 // package only because streamDedupKey lives in package yarad. Remote CI
 // (docker build with libyara) is required to run it locally.
 func TestStreamDedupKey(t *testing.T) {
-	t.Run("empty input does not panic", func(t *testing.T) {
-		k := streamDedupKey([]byte{})
-		_ = k // just must not panic
-	})
-
-	t.Run("nil input does not panic", func(t *testing.T) {
-		k := streamDedupKey(nil)
-		_ = k
+	// empty and nil must hash to the same key (both are zero-length content) and
+	// must not panic.
+	t.Run("empty and nil hash identically", func(t *testing.T) {
+		if streamDedupKey([]byte{}) != streamDedupKey(nil) {
+			t.Fatal("empty and nil inputs must produce the same key")
+		}
 	})
 
 	t.Run("same input returns same key", func(t *testing.T) {
@@ -48,10 +46,15 @@ func TestStreamDedupKey(t *testing.T) {
 		}
 	})
 
-	t.Run("key is 16 bytes", func(t *testing.T) {
+	// the high and low 64-bit halves must differ for typical input (the two
+	// passes are domain-separated, so a key is not just a doubled xxhash64).
+	t.Run("halves are independent", func(t *testing.T) {
 		k := streamDedupKey([]byte("test"))
-		if len(k) != 16 {
-			t.Fatalf("expected 16-byte key, got %d bytes", len(k))
+		var lo, hi [8]byte
+		copy(lo[:], k[0:8])
+		copy(hi[:], k[8:16])
+		if lo == hi {
+			t.Fatalf("low and high halves identical (%x) — domain separation broken", k)
 		}
 	})
 }
