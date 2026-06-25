@@ -3,6 +3,7 @@ package yarad
 import (
 	"bufio"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -14,12 +15,32 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	yara "github.com/hillu/go-yara/v4"
 
 	"github.com/eilandert/rspamd-yarad/internal/extract"
 	"github.com/eilandert/rspamd-yarad/internal/mbazaar"
 	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
+
+// streamDedupKey returns a 16-byte key for the per-stream dedup set inside
+// Scanner.Scan. xxhash is non-cryptographic but collision odds across ≤256
+// streams of practical size are negligible (~2⁻⁶⁴ per pair), and it is
+// orders of magnitude faster than SHA-256 on multi-MB buffers.
+// Two independent 64-bit passes (second pass domain-separated with 0x01) give
+// a 128-bit key so the map can use a [16]byte array — allocation-free and
+// faster than a string key.
+func streamDedupKey(b []byte) [16]byte {
+	lo := xxhash.Sum64(b)
+	d := xxhash.New()
+	_, _ = d.Write([]byte{0x01})
+	_, _ = d.Write(b)
+	hi := d.Sum64()
+	var k [16]byte
+	binary.LittleEndian.PutUint64(k[0:8], lo)
+	binary.LittleEndian.PutUint64(k[8:16], hi)
+	return k
+}
 
 // Match is one matched YARA rule, reported back to the rspamd plugin. Tags and
 // the "meta" map come straight from the rule definition so the plugin can score
@@ -932,15 +953,15 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 	// would otherwise each spend a full libyara scan budget for no added signal.
 	// The raw input buffer is seeded into seen first so a stream byte-identical to
 	// the raw bytes is also skipped (it can't add new matches).
-	seen := make(map[[32]byte]struct{})
-	seen[digest] = struct{}{} // body already hashed once by the caller (PERF-3)
+	seen := make(map[[16]byte]struct{})
+	seen[streamDedupKey(buf)] = struct{}{} // xxhash the body once so a stream byte-identical to the raw body is skipped (PERF-3)
 	// scanExtracted runs one extracted entry (real content stream OR an out-of-band
 	// marker) through dedup, the shared scan budget, and merge. Returns true when
 	// the budget is exhausted so the caller stops the whole sweep. Markers and
 	// Streams share one `seen` set and one budget — a marker byte-identical to a
 	// real stream is scanned once, and markers can't overrun the deadline.
 	scanExtracted := func(stream []byte, markerChannel bool) (stop bool) {
-		h := sha256.Sum256(stream)
+		h := streamDedupKey(stream)
 		if _, dup := seen[h]; dup {
 			s.exDeduped.Add(1)
 			return false

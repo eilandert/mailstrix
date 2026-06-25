@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/bodgit/sevenzip v1.6.4
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/hillu/go-yara/v4 v4.3.3
 	github.com/nwaples/rardecode/v2 v2.2.5
 	github.com/redis/go-redis/v9 v9.20.1
@@ -14,7 +15,6 @@ require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/bodgit/plumbing v1.3.0 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
