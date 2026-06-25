@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra+htmlsmuggle+encarchive+polyglot+xll+htmlnested+encarchivehdr+onenoterec+rtfcfbole+fmtcaplocal+csvquote+nestedooxmlopts+ddeparts+oleidorder+utf16decode+vbastream+officesibling"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra+htmlsmuggle+encarchive+polyglot+xll+htmlnested+encarchivehdr+onenoterec+rtfcfbole+fmtcaplocal+csvquote+nestedooxmlopts+ddeparts+oleidorder+utf16decode+vbastream+officesibling+mhtmlrel"
 
 // Options carries the per-request extraction caps (EFFORT-4) plus the time
 // budget. It is resolved once per scan from the effort level and threaded to the
@@ -1030,13 +1030,25 @@ func fromOOXMLRels(zr *zip.Reader, out *[][]byte, deadline time.Time) {
 				continue
 			}
 			target := rel.Target
-			if !hasSuspiciousScheme(target) {
-				continue
-			}
 			// Build a short type label: use the last path segment of the Type URI.
 			typLabel := rel.Type
 			if idx := strings.LastIndex(typLabel, "/"); idx >= 0 {
 				typLabel = typLabel[idx+1:]
+			}
+			// CVE-2021-40444 (MSHTML): the exploit smuggles an `mhtml:` (or
+			// `file://` with an `!x-usc:` selector) scheme into an External rel
+			// Target so Office fetches the URL through the MSHTML/ActiveX path
+			// instead of the normal template fetch. A benign document never points
+			// a relationship at an mhtml: URI, so this is a distinct high-signal
+			// marker rather than a plain OOXML-EXTERNAL-REL. Emitted in addition to
+			// (not instead of) the generic marker when the inner scheme is remote.
+			if hasMHTMLScheme(target) {
+				stream := []byte("OOXML-MHTML-REL " + typLabel + " " + target)
+				*out = append(*out, stream)
+				continue
+			}
+			if !hasSuspiciousScheme(target) {
+				continue
 			}
 			stream := []byte("OOXML-EXTERNAL-REL " + typLabel + " " + target)
 			*out = append(*out, stream)
@@ -1054,6 +1066,16 @@ func hasSuspiciousScheme(target string) bool {
 		}
 	}
 	return false
+}
+
+// hasMHTMLScheme reports whether target uses the CVE-2021-40444 delivery scheme:
+// an `mhtml:` URI, or a `file://`/`http(s)://` URI carrying the `!x-usc:`
+// MHTML-fragment selector. Both route the fetch through MSHTML, the bug Office
+// abused to load a remote .cab/.inf without a macro. A legitimate relationship
+// Target never carries these, so a match is the attack — not a heuristic.
+func hasMHTMLScheme(target string) bool {
+	lower := strings.ToLower(target)
+	return strings.HasPrefix(lower, "mhtml:") || strings.Contains(lower, "!x-usc:")
 }
 
 // countExternalRels counts how many entries in streams start with the
