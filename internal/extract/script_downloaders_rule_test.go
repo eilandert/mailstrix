@@ -6,9 +6,11 @@ import (
 	"testing"
 )
 
-// script_downloaders.yara ships four tiny-stub downloader/executor heuristics,
-// closing ten live MalwareBazaar .ps1/.vbs 0-hit misses (55-152 byte first-stage
-// stubs). yarad's unit suite does not link libyara, so — like the other rule
+// script_downloaders.yara ships tiny-stub downloader/executor heuristics: the
+// original four (ten live MalwareBazaar .ps1/.vbs 0-hit misses, 55-152 byte
+// first-stage stubs) plus the s31 second batch of four single-family ASCII
+// PS/VBS misses (2c41d4f8 / 9f0a17d4 / 3ae711ab / f6438c51). yarad's unit suite
+// does not link libyara, so — like the other rule
 // tests — this asserts the rule SOURCE is present and well-formed; the real
 // compile+match runs in the Docker `full` CI stage (compile-rules.sh runs yarac
 // over every local rule, then the runtime scanners job scans fixtures).
@@ -36,6 +38,11 @@ func TestScriptDownloadersRule_Present(t *testing.T) {
 		"rule VBS_GetObject_Scriptlet_SelfDelete",
 		"rule Script_MSIExec_Remote_Package_Silent",
 		"rule VBS_WScriptShell_Run_TempBat_Hidden",
+		// s31 second batch: four single-family 0-hit misses.
+		"rule PS1_Curl_Rundll32_PNG_Loader",          // 2c41d4f8
+		"rule PS1_PSCredential_Password_Spray",       // 9f0a17d4
+		"rule PS1_Defender_Exclusion_Cleanup_Loader", // 3ae711ab
+		"rule VBS_CustomBase64_MSXML_ExecuteGlobal",  // f6438c51
 	} {
 		if !bytes.Contains(data, []byte(want)) {
 			t.Errorf("script_downloaders.yara missing %q", want)
@@ -53,6 +60,15 @@ func TestScriptDownloadersRule_Anchors(t *testing.T) {
 		"msiexec",                           // remote installer
 		"WScript.Shell",                     // Run launcher
 		`AppData\\Local\\Temp\\`,            // temp drop path
+		// s31 batch construct anchors
+		"curl.exe",       // 2c41d4f8
+		`\.png["']?\s*,`, // 2c41d4f8 rundll32-on-png
+		"System.Management.Automation.PSCredential", // 9f0a17d4
+		"-AsPlainText",                 // 9f0a17d4
+		"Remove-MpPreference",          // 3ae711ab
+		"$MyInvocation.MyCommand.Path", // 3ae711ab self-delete
+		"MSXML2.ServerXMLHTTP",         // f6438c51
+		"ExecuteGlobal",                // f6438c51
 	} {
 		if !bytes.Contains(data, []byte(anchor)) {
 			t.Errorf("script_downloaders.yara missing anchor %q", anchor)
