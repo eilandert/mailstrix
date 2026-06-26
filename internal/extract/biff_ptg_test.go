@@ -73,6 +73,66 @@ func TestBIFF8ConcatOrder(t *testing.T) {
 	}
 }
 
+// XLM-2-FUNCARITY regression set. ptgFunc (fixed argc) used to pop exactly ONE
+// operand, so a multi-arg fixed-arity builder (MID/REPLACE/…) under-popped and
+// left its leading operands on the stack, garbling the fold. biffFuncArity now
+// pops the function's true mandatory arity. These all FAIL against the old code.
+
+func TestBIFF8FixedArityMID(t *testing.T) {
+	// MID("calc.exe", 1, 8)  — ftab 31 (0x1f), arity 3.
+	stream := ptgStr8("calc.exe")
+	stream = append(stream, ptgIntTok(1)...)
+	stream = append(stream, ptgIntTok(8)...)
+	stream = append(stream, ptgFuncTok(31)...)
+	// 31 isn't a named dangerous verb → neutral FUNC_1f wrapper, but all three
+	// operands must be popped in source order.
+	if got := parseBIFF8Formula(stream); got != "FUNC_1f(calc.exe,1,8)" {
+		t.Fatalf("MID arity: got %q, want FUNC_1f(calc.exe,1,8)", got)
+	}
+}
+
+func TestBIFF8FixedArityREPLACE(t *testing.T) {
+	// REPLACE("abcd", 1, 2, "XY") — ftab 119 (0x77), arity 4.
+	stream := ptgStr8("abcd")
+	stream = append(stream, ptgIntTok(1)...)
+	stream = append(stream, ptgIntTok(2)...)
+	stream = append(stream, ptgStr8("XY")...)
+	stream = append(stream, ptgFuncTok(119)...)
+	if got := parseBIFF8Formula(stream); got != "FUNC_77(abcd,1,2,XY)" {
+		t.Fatalf("REPLACE arity: got %q, want FUNC_77(abcd,1,2,XY)", got)
+	}
+}
+
+func TestBIFF8FixedArityNestedInExec(t *testing.T) {
+	// =EXEC(MID("calc.exe",1,8)) — the real-world impact: a fixed-arity builder
+	// nested in a dangerous verb. Old code under-popped MID, leaking "calc.exe"
+	// and "1" as leading garbage and handing EXEC the wrong argument.
+	stream := ptgStr8("calc.exe")
+	stream = append(stream, ptgIntTok(1)...)
+	stream = append(stream, ptgIntTok(8)...)
+	stream = append(stream, ptgFuncTok(31)...)        // MID, arity 3
+	stream = append(stream, ptgFuncVarTok(1, 110)...) // EXEC, argc 1 (variadic)
+	got := parseBIFF8Formula(stream)
+	if got != "=EXEC(FUNC_1f(calc.exe,1,8))" {
+		t.Fatalf("nested EXEC(MID): got %q, want =EXEC(FUNC_1f(calc.exe,1,8))", got)
+	}
+	if !strings.HasPrefix(got, "=EXEC(") {
+		t.Fatalf("EXEC marker lost / garbled: %q", got)
+	}
+}
+
+func TestBIFF8UnknownFuncStillSinglePop(t *testing.T) {
+	// Regression guard: a func id absent from biffFuncArity must still pop only
+	// ONE operand (the historical CHAR/unary default) — never over-pop a deeper,
+	// unrelated operand. "keep" must survive on the stack.
+	stream := ptgStr8("keep")
+	stream = append(stream, ptgStr8("arg")...)
+	stream = append(stream, ptgFuncTok(0xFEED)...) // not in arity table
+	if got := parseBIFF8Formula(stream); got != "keepFUNC_feed(arg)" {
+		t.Fatalf("unknown func: got %q, want keepFUNC_feed(arg)", got)
+	}
+}
+
 func TestBIFF8Int(t *testing.T) {
 	if got := parseBIFF8Formula(ptgIntTok(12345)); got != "12345" {
 		t.Fatalf("int: got %q", got)

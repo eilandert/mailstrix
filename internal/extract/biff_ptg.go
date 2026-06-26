@@ -146,6 +146,31 @@ var biffFuncNames = map[uint16]string{
 	33151: "WORKBOOK.HIDE",
 }
 
+// biffFuncArity gives the FIXED argument count for ptgFunc (0x21) function ids
+// that take more than one MANDATORY operand. ptgFunc encodes only fixed-arity
+// built-ins; the dangerous XLM verbs (EXEC/CALL/REGISTER/FOPEN/…) are variadic
+// and arrive as ptgFuncVar (0x22) which already carries an explicit argc, so
+// they are NOT listed here. This table exists purely to keep the operand stack
+// balanced while folding: a fixed-arity multi-arg string builder like
+// MID(s,n,m) or REPLACE(s,n,m,r) nested inside a dropper formula must pop ALL
+// its operands, or the surrounding =EXEC(…)/concat under-pops and the fold
+// garbles (the parent sees a leftover operand as its argument).
+//
+// Only functions whose mandatory arity is genuinely fixed and >1 belong here —
+// any id absent from the map falls back to popping a single operand (the
+// historical CHAR(n)/unary default), so an unknown or 1-arg function is never
+// over-popped. Ftab ids cross-checked against MS-XLS §2.5.198.17 / the ClamAV
+// ftab (oletools-reference.md §4).
+var biffFuncArity = map[uint16]int{
+	30:  2, // REPT(text, number_times)
+	31:  3, // MID(text, start_num, num_chars)
+	39:  2, // MOD(number, divisor)
+	65:  3, // DATE(year, month, day)
+	66:  3, // TIME(hour, minute, second)
+	117: 2, // EXACT(text1, text2)
+	119: 4, // REPLACE(old_text, start_num, num_chars, new_text)
+}
+
 // parseBIFF8Formula statically folds a BIFF8 XLM formula ptg token stream into a
 // formula string. It evaluates the reverse-Polish token sequence on an operand
 // stack: literal tokens push their value, ptgConcat folds the top two operands,
@@ -249,12 +274,22 @@ func parseBIFF8Formula(data []byte) string {
 				return joinStack(stack)
 			}
 			funcID := uint16(data[pos+1]) | uint16(data[pos+2])<<8
-			// Fixed-argc functions: the reference folder does not track each
-			// function's fixed arity, so we wrap the single top-of-stack operand
-			// (the common CHAR(n)/unary case) without under-popping a deeper
-			// stack. This keeps =CHAR(...) and dangerous unary verbs visible.
-			arg := popStack(&stack)
-			push(wrapFunc(funcID, arg))
+			// Fixed-argc functions. Most fold the single top-of-stack operand
+			// (the common CHAR(n)/unary case), but a multi-arg fixed-arity
+			// builder (MID/REPLACE/DATE/…) listed in biffFuncArity must pop ALL
+			// its operands or the surrounding =EXEC(…)/concat under-pops and the
+			// fold garbles. Unknown ids fall back to a single pop (never
+			// over-pops past a deeper, unrelated operand).
+			arity := 1
+			if a, ok := biffFuncArity[funcID]; ok {
+				arity = a
+			}
+			args := make([]string, 0, arity)
+			for i := 0; i < arity; i++ {
+				args = append(args, popStack(&stack))
+			}
+			reverse(args) // popped most-recent-first; restore source order
+			push(wrapFunc(funcID, strings.Join(args, ",")))
 			pos += 3
 
 		case ptgFuncVar:
