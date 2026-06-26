@@ -163,11 +163,36 @@ func TestSVGEmbeddedPayloadNoFalsePositive(t *testing.T) {
 func TestSVGEmbeddedPayloadNotFromPlainHTML(t *testing.T) {
 	payload := append([]byte("PK\x03\x04"), bytes.Repeat([]byte{0x45}, 64)...)
 	b64 := base64.StdEncoding.EncodeToString(payload)
-	// No <svg>, no download attr → neither SVG nor DATAURI path should carve.
+	// No <svg>: must NOT be attributed to the SVG path. A container payload in a
+	// non-downloaded data: URI in plain HTML now carves on the general path as
+	// HTML-DATAURI-CONTAINER instead (the container magic is the FP firewall).
 	in := `<img src="data:application/octet-stream;base64,` + b64 + `">`
 	res := runHTML([]byte(in))
 	if streamHas(res, "SVG-EMBEDDED-PAYLOAD") {
 		t.Error("non-SVG container data: URI wrongly emitted SVG-EMBEDDED-PAYLOAD")
+	}
+	if !streamHas(res, "HTML-DATAURI-CONTAINER") {
+		t.Error("plain-HTML container data: URI must emit HTML-DATAURI-CONTAINER")
+	}
+	found := false
+	for _, s := range res.Streams {
+		if bytes.HasPrefix(s, []byte("PK\x03\x04")) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("decoded PK container should be carved as a child stream")
+	}
+}
+
+func TestHTMLDataURIContainerNoFalsePositive(t *testing.T) {
+	// Non-container payload (a real PNG) with no download attr must NOT carve.
+	payload := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{0x46}, 64)...)
+	b64 := base64.StdEncoding.EncodeToString(payload)
+	in := `<img src="data:image/png;base64,` + b64 + `">`
+	res := runHTML([]byte(in))
+	if streamHas(res, "HTML-DATAURI-CONTAINER") {
+		t.Error("benign inline data:image must not emit HTML-DATAURI-CONTAINER")
 	}
 }
 

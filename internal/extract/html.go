@@ -181,10 +181,21 @@ func fromHTMLSmuggling(buf []byte, res *Result, b *archiveBudget, depth int, dea
 		}
 	}
 
-	// Signal 2: force-downloaded base64 data: URI. Gate on a download intent
-	// anywhere in the window so a benign inline data:image never carves.
-	if !hasDownload {
+	// Signal 2: base64 data: URI carve. SVG data: URIs are already handled by the
+	// SVG-deepen path above, so skip them here to avoid a double carve.
+	if isSVG {
 		return
+	}
+	// Fires on EITHER a force-download intent (a smuggled file regardless of
+	// content) OR a container-magic payload in plain HTML (a dropper hidden in a
+	// non-downloaded data: URI — e.g. an iframe/meta-refresh/JS-fetched blob).
+	// The container-magic gate is the FP firewall for the no-download case: a
+	// benign inline data:image never decodes to PK/OLE2/MZ/%PDF — same rationale
+	// as SVG-EMBEDDED-PAYLOAD. When download intent IS present we keep the
+	// content-agnostic behaviour (any decoded payload counts).
+	dataURIMarker := "HTML-SMUGGLING-DATAURI"
+	if !hasDownload {
+		dataURIMarker = "HTML-DATAURI-CONTAINER"
 	}
 	carved := 0
 	for _, m := range reDataURIBase64.FindAllSubmatch(head, htmlMaxDataURIs*2) {
@@ -195,16 +206,20 @@ func fromHTMLSmuggling(buf []byte, res *Result, b *archiveBudget, depth int, dea
 		if dec == nil {
 			continue
 		}
-		// A force-downloaded base64 data: URI is a smuggled file regardless of
-		// content; emit the marker once we have a real decoded payload.
+		isContainer := hasContainerMagic(dec)
+		// Without a download attribute, only a real dropper container carves;
+		// a benign inline data:image is skipped.
+		if !hasDownload && !isContainer {
+			continue
+		}
 		if carved == 0 && len(res.Streams) < maxStreams {
-			res.Streams = append(res.Streams, []byte("HTML-SMUGGLING-DATAURI"))
+			res.Streams = append(res.Streams, []byte(dataURIMarker))
 		}
 		carved++
 		// If the decoded bytes carry a container magic, route them through the
 		// nested extractor so the reconstructed dropper is fully scanned; either
 		// way the decoded blob is added as a stream for the rule set.
-		if hasContainerMagic(dec) {
+		if isContainer {
 			extractChild(dec, res, b, depth+1, deadline)
 		}
 		if len(res.Streams) < maxStreams {
