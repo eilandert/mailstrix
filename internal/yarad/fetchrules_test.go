@@ -34,6 +34,20 @@ func rulesServer(t *testing.T, yac []byte, ver int, libyara, badSum string) *htt
 	return httptest.NewServer(mux)
 }
 
+// compiledYacBytes returns the bytes of a real compiled .yac, so a served bundle
+// passes the new load-validation (FetchRules now yara.LoadRules-checks the temp
+// bundle before swapping it into the cache).
+func compiledYacBytes(t *testing.T, rule string) []byte {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "bundle.yac")
+	compiledYac(t, p, rule)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func seedLocal(t *testing.T, cacheDir string, ver int, yac []byte) {
 	t.Helper()
 	if err := os.MkdirAll(cacheDir, 0o750); err != nil {
@@ -51,7 +65,7 @@ func seedLocal(t *testing.T, cacheDir string, ver int, yac []byte) {
 
 func TestFetchRulesUpdates(t *testing.T) {
 	cacheDir := t.TempDir()
-	newYac := []byte("NEW-COMPILED-BUNDLE")
+	newYac := compiledYacBytes(t, "rule N { condition: true }")
 	srv := rulesServer(t, newYac, 5, "4.5.2", "")
 	defer srv.Close()
 
@@ -128,7 +142,7 @@ func TestFetchRulesRejectsBadChecksum(t *testing.T) {
 func TestFetchRulesKeepsBackup(t *testing.T) {
 	cacheDir := t.TempDir()
 	seedLocal(t, cacheDir, 1, []byte("OLD-BUNDLE"))
-	srv := rulesServer(t, []byte("NEW-BUNDLE"), 2, "4.5.2", "")
+	srv := rulesServer(t, compiledYacBytes(t, "rule N { condition: true }"), 2, "4.5.2", "")
 	defer srv.Close()
 
 	if _, err := FetchRules(context.Background(), srv.URL, cacheDir, "4.5.2", srv.Client()); err != nil {
@@ -147,7 +161,7 @@ func TestFetchRulesKeepsBackup(t *testing.T) {
 // any remote libyara (skew check disabled).
 func TestFetchRulesEmptyLibyaraSkipsSkewCheck(t *testing.T) {
 	cacheDir := t.TempDir()
-	srv := rulesServer(t, []byte("NEW"), 1, "9.9.9", "")
+	srv := rulesServer(t, compiledYacBytes(t, "rule N { condition: true }"), 1, "9.9.9", "")
 	defer srv.Close()
 
 	res, err := FetchRules(context.Background(), srv.URL, cacheDir, "", srv.Client())
@@ -156,6 +170,28 @@ func TestFetchRulesEmptyLibyaraSkipsSkewCheck(t *testing.T) {
 	}
 	if !res.Updated {
 		t.Fatalf("expected update with skew check disabled: %+v", res)
+	}
+}
+
+// TestFetchRulesRejectsUnloadableBundle: a downloaded bundle whose bytes match the
+// manifest size+checksum but do NOT load under libyara (corrupt at source / wrong
+// libyara) must be rejected and the current cache + backup kept — integrity of the
+// bytes is not proof they load.
+func TestFetchRulesRejectsUnloadableBundle(t *testing.T) {
+	cacheDir := t.TempDir()
+	seedLocal(t, cacheDir, 1, []byte("CUR-BUNDLE"))
+	// Garbage bytes, but rulesServer computes the checksum FROM them so verifyBundle
+	// passes; only the load-validate catches it.
+	srv := rulesServer(t, []byte("NOT-A-REAL-YAC-BUNDLE-ZZZZ"), 2, "4.5.2", "")
+	defer srv.Close()
+
+	_, err := FetchRules(context.Background(), srv.URL, cacheDir, "4.5.2", srv.Client())
+	if err == nil {
+		t.Fatal("expected an error for an unloadable downloaded bundle")
+	}
+	got, _ := os.ReadFile(filepath.Join(cacheDir, cachedRulesName))
+	if string(got) != "CUR-BUNDLE" {
+		t.Errorf("unloadable bundle replaced the cache: %q", got)
 	}
 }
 

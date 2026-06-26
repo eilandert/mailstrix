@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	yara "github.com/hillu/go-yara/v4"
 )
 
 // cachedRulesName is the live compiled bundle's filename inside CacheDir.
@@ -34,18 +36,30 @@ func EnsureCachedRules(cfg *Config, logf func(string, ...any)) error {
 	}
 	cachePath := filepath.Join(cfg.CacheDir, cachedRulesName)
 
+	// Trust the cache only if it is non-empty AND actually loads under this
+	// libyara. A bundle that is the right shape but corrupt or compiled against a
+	// different libyara passes rulesFileUsable yet crashes the scanner load at
+	// startup/SIGHUP — by which point the known-good seed may be the only recovery.
+	// Load-validate here so an unloadable cache is reseeded NOW, not discovered later.
 	if rulesFileUsable(cachePath) {
-		cfg.RulesPath = cachePath
-		return nil
+		if err := rulesBundleLoadable(cachePath); err == nil {
+			cfg.RulesPath = cachePath
+			return nil
+		} else {
+			logf("WARNING: cached rules %s present but not loadable (%v); reseeding from baked seed", cachePath, err)
+		}
 	}
 
-	// Cache missing or unreadable — reseed from the baked, read-only seed.
+	// Cache missing, unreadable, or not loadable — reseed from the baked, read-only seed.
 	seed := cfg.SeedRules
 	if seed == "" {
 		seed = cfg.RulesPath // fall back to whatever bundle the image baked
 	}
 	if !rulesFileUsable(seed) {
 		return fmt.Errorf("cache %s is empty and no usable seed (YARAD_SEED_RULES/%s)", cachePath, cfg.RulesPath)
+	}
+	if err := rulesBundleLoadable(seed); err != nil {
+		return fmt.Errorf("seed %s is not a loadable rule bundle: %w", seed, err)
 	}
 	if err := copyFileAtomic(seed, cachePath); err != nil {
 		return fmt.Errorf("seed %s -> %s: %w", seed, cachePath, err)
@@ -70,6 +84,22 @@ func rulesFileUsable(path string) bool {
 	}
 	_ = f.Close()
 	return true
+}
+
+// rulesBundleLoadable reports whether path is a compiled .yac that actually loads
+// under the linked libyara — the only check that catches a corrupt or
+// wrong-libyara bundle that nonetheless has the right size/shape/checksum. The
+// loaded rules are destroyed immediately (this is a validation probe, not the live
+// load). A nil return means the bundle is safe to trust/swap.
+func rulesBundleLoadable(path string) error {
+	r, err := yara.LoadRules(path)
+	if err != nil {
+		return err
+	}
+	if r != nil {
+		r.Destroy() // free the C-side rules; we only needed to prove it loads
+	}
+	return nil
 }
 
 // copyFileAtomic copies src to dst by writing a temp file in dst's directory and
