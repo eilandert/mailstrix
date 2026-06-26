@@ -102,7 +102,7 @@ func TestDigSigAbsent(t *testing.T) {
 func wordDocStream(flags uint16) []byte {
 	b := make([]byte, 32)
 	binary.LittleEndian.PutUint16(b[0:], 0xA5EC) // wIdent
-	binary.LittleEndian.PutUint16(b[10:], flags)  // flags (fEncrypted = bit 0x0100)
+	binary.LittleEndian.PutUint16(b[10:], flags) // flags (fEncrypted = bit 0x0100)
 	return b
 }
 
