@@ -533,6 +533,7 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 - [x] Container extraction: RTF `\objdata`, OLE Package, MSI, Outlook `.msg`, OneNote, PDF, `.lnk`, VBE/JSE, nested archives — **recursively**: a carrier carved out of another (a PDF inside a `.msg` attachment, an Office macro inside an archive member, a `.vbe` inside an OLE Package) is routed back through the matching extractor under one shared depth/byte budget, not scanned only as raw bytes
 - [x] Local heuristic `Maldoc_AutoExec_Write_Execute` (mraptor-style autoexec∧write∧execute), baked from `docker/local-rules/`
 - [x] Local heuristics `Maldoc_Suspicious_VBA_Keywords` (olevba count heuristic) + `Maldoc_VBA_Shellcode_API` (Declare+injection-API)
+- [x] Position-independent shellcode `GetEIP` prologue (`Shellcode_GetEIP`): call/pop (`E8 00000000` + pop) and Didier-Stevens `fnstenv` stubs in a non-PE blob/attachment, gated `not uint16(0)==0x5A4D` (zero benign-PE FP)
 - [x] OOXML external-relationship scan (`*/_rels/*.rels`) → `OOXML_Remote_Template` rule (remote-template injection, T1221)
 - [x] Static single-layer decode pass (base64/hex/`StrReverse`) over raw + extracted streams, re-scanned (depth cap 1)
 - [x] Base64-PE carving: a decoded blob whose MZ header is pushed to a non-zero offset by a leading pad (the `pe` module anchors on MZ@0) is re-aligned and carved into an MZ@0 child for the pe rules, plus a `BASE64-PE-CARVE` marker (`Base64_Stuffed_PE` rule); validated through `e_lfanew` (zero-FP)
