@@ -108,6 +108,14 @@ func FetchRules(ctx context.Context, baseURL, cacheDir, ourLibyara string, hc *h
 	if err := verifyBundle(tmp, remote); err != nil {
 		return res, fmt.Errorf("verify bundle: %w", err)
 	}
+	// Size+sha prove integrity of the bytes, not that they LOAD: a bundle compiled
+	// against a different libyara (or subtly corrupt at the source) can match its
+	// own checksum yet fail yara.LoadRules. Load-validate the temp bundle BEFORE the
+	// swap so a bad download never replaces the working cache — the deferred
+	// os.Remove(tmp) discards it and the old cache (+ .bak) stays live.
+	if err := rulesBundleLoadable(tmp); err != nil {
+		return res, fmt.Errorf("downloaded bundle does not load (keeping current cache): %w", err)
+	}
 
 	// Back up the current live bundle (one copy) so a bad load can roll back.
 	if fileExists(cachePath) {
