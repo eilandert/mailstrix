@@ -123,6 +123,38 @@ func TestFetchRules_DenylistPrunes(t *testing.T) {
 	}
 }
 
+// capeRules are the curated CAPEv2 family rules fetch-rules.sh must pull. Keep
+// in sync with the CAPE block in docker/fetch-rules.sh.
+var capeRules = []string{"Guloader", "Formbook", "AgentTesla", "Obfuscar"}
+
+// TestFetchRules_CAPESource lints the script source: the curated CAPEv2 raw
+// fetch must reference each expected rule file, gate on CAPE=1, and declare its
+// provenance in sources.json. Hermetic — no network.
+func TestFetchRules_CAPESource(t *testing.T) {
+	b, err := os.ReadFile(fetchRulesScript(t))
+	if err != nil {
+		t.Fatalf("read fetch-rules.sh: %v", err)
+	}
+	src := string(b)
+	if !regexp.MustCompile(`CAPE_RAW=.*kevoreilly/CAPEv2`).MatchString(src) {
+		t.Error("CAPE raw-fetch base (kevoreilly/CAPEv2) missing from fetch-rules.sh")
+	}
+	// the curated `for r in ...` list must name every expected rule file
+	m := regexp.MustCompile(`for r in ([A-Za-z0-9 ]+); do\n\s*if curl -fsSL "\$CAPE_RAW`).FindStringSubmatch(src)
+	if m == nil {
+		t.Fatal("CAPE curated `for r in ... do curl $CAPE_RAW` loop not found")
+	}
+	list := m[1]
+	for _, name := range capeRules {
+		if !regexp.MustCompile(`(^|\s)` + regexp.QuoteMeta(name) + `(\s|$)`).MatchString(list) {
+			t.Errorf("CAPE: %q missing from curated fetch list (%q)", name, list)
+		}
+	}
+	if !regexp.MustCompile(`"name":"cape".*kevoreilly/CAPEv2.*BSD-3-Clause`).MatchString(src) {
+		t.Error("CAPE provenance entry missing/incomplete in sources.json block")
+	}
+}
+
 // extractDenylistBlock pulls the `SLOW_RULE_DENYLIST=...` assignment through the
 // closing `done` of its prune loop, so the test runs the real script logic.
 func extractDenylistBlock(t *testing.T, src string) string {

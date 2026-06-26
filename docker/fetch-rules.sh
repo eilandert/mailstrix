@@ -206,6 +206,34 @@ if [ "${YARAIFY:-1}" = "1" ]; then
     fi
 fi
 
+# 8) kevoreilly/CAPEv2 — BSD-3-Clause; the CAPE sandbox's family payload rules.
+#    Curated raw-fetch of a handful of files instead of the whole repo tarball:
+#    CAPEv2 is a full analysis sandbox (hundreds of MB) and most of its YARA is
+#    post-execution / memory-dump rules that never fire on the mail vector. We
+#    take only mail-relevant droppers/loaders that add non-duplicate coverage:
+#    Guloader (non-PE shellcode trap blobs — complements our Shellcode_GetEIP),
+#    Formbook/AgentTesla (stealer payload byte-sigs), Obfuscar (.NET xor stub).
+#    All four are module-free (no `import pe`/dotnet), so they compile cleanly in
+#    our libyara; compile-rules.sh still test-compiles each file alone and prunes
+#    any that fail. Patterns are bounded hex/string atoms — low slow-rule risk;
+#    re-profile after adding (run-profile.sh) and add to SLOW_RULE_DENYLIST if any
+#    show up hot. CAPE=0 to skip; CAPE_REF to pin a ref.
+if [ "${CAPE:-1}" = "1" ]; then
+    CAPE_REF="${CAPE_REF:-master}"
+    CAPE_RAW="https://raw.githubusercontent.com/kevoreilly/CAPEv2/${CAPE_REF}/data/yara/CAPE"
+    echo "fetch-rules: cape <- kevoreilly/CAPEv2@$CAPE_REF (curated)"
+    cape_got=0
+    for r in Guloader Formbook AgentTesla Obfuscar; do
+        if curl -fsSL "$CAPE_RAW/${r}.yar" -o "$OUT/cape-${r}.yar"; then
+            cape_got=$((cape_got + 1))
+        else
+            rm -f "$OUT/cape-${r}.yar"
+            echo "fetch-rules: cape ${r}.yar not found (upstream layout changed?)" >&2
+        fi
+    done
+    [ "$cape_got" -gt 0 ] || fail "download cape rules failed (0 of 4 fetched)"
+fi
+
 # Build-time rule denylist: rules pruned from the fetched bundle before
 # compilation so they are never loaded or run at all.
 #
@@ -264,6 +292,9 @@ echo "fetch-rules: $COUNT rule files in $OUT"
     fi
     if [ "${INQUEST:-1}" = "1" ]; then
         printf ',\n  {"name":"inquest","repo":"https://github.com/InQuest/yara-rules-vt","license":"MIT","ref":"%s"}' "${INQUEST_REF:-main}"
+    fi
+    if [ "${CAPE:-1}" = "1" ]; then
+        printf ',\n  {"name":"cape","repo":"https://github.com/kevoreilly/CAPEv2","license":"BSD-3-Clause","ref":"%s"}' "${CAPE_REF:-master}"
     fi
     if [ "${YARAIFY:-1}" = "1" ]; then
         printf ',\n  {"name":"yaraify","repo":"https://yaraify.abuse.ch/yarahub/","license":"CC0","ref":"latest"}'
