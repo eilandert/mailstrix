@@ -84,6 +84,7 @@ var parityMarkers = map[string]markerKind{
 	"ARCHIVE-ENCRYPTED":      contractMarker, // archive_indicators.yara Archive_Encrypted
 	"POLYGLOT-PE-ZIP":        contractMarker, // archive_indicators.yara Polyglot_PE_ZIP
 	"XLL-ADDIN":              contractMarker, // archive_indicators.yara XLL_AddIn
+	"BASE64-PE-CARVE":        contractMarker, // archive_indicators.yara Base64_Stuffed_PE
 	"PDF-OPENACTION-JS":      contractMarker, // pdf_indicators.yara PDF_OpenAction_JS
 	"PDF-AA-ACTION":          contractMarker, // pdf_indicators.yara PDF_Additional_Actions
 	"PDF-LAUNCH":             contractMarker, // pdf_indicators.yara PDF_Launch_Action

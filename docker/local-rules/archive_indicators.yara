@@ -49,6 +49,20 @@ rule XLL_AddIn : xll office heuristic suspicious marker
         filesize < 16MB and $marker
 }
 
+rule Base64_Stuffed_PE : evasion heuristic malware marker
+{
+    meta:
+        author      = "yarad"
+        description = "A full Windows PE was base64/hex-encoded into a document text field (e.g. OOXML docProps) with a pad so the MZ header lands at a non-zero offset, evading the pe module's MZ@0 anchor. yarad decodes the run, carves an MZ-aligned copy for the pe rules, and flags the staged executable"
+        reference   = "https://attack.mitre.org/techniques/T1027/"
+        tier        = "malware"
+        score       = "85"
+    strings:
+        $marker = "BASE64-PE-CARVE" ascii
+    condition:
+        filesize < 16MB and $marker
+}
+
 rule Renamed_Container : evasion heuristic suspicious marker
 {
     meta:

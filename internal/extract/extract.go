@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra+htmlsmuggle+encarchive+polyglot+xll+htmlnested+encarchivehdr+onenoterec+rtfcfbole+fmtcaplocal+csvquote+nestedooxmlopts+ddeparts+oleidorder+utf16decode+vbastream+officesibling+mhtmlrel+svgpayload+fibenc+pptenc"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra+htmlsmuggle+encarchive+polyglot+xll+htmlnested+encarchivehdr+onenoterec+rtfcfbole+fmtcaplocal+csvquote+nestedooxmlopts+ddeparts+oleidorder+utf16decode+vbastream+officesibling+mhtmlrel+svgpayload+fibenc+pptenc+b64pecarve"
 
 // Options carries the per-request extraction caps (EFFORT-4) plus the time
 // budget. It is resolved once per scan from the effort level and threaded to the
@@ -448,7 +448,14 @@ func ExtractWithOptions(buf []byte, opts *Options) (res Result) {
 	// reversed payload hidden in a script body or a decompressed macro is decoded
 	// and re-scanned. Snapshotted internally so decoded blobs are not re-decoded
 	// (depth cap 1). Best-effort; binary container bytes are skipped.
+	preDecodeLen := len(res.Streams)
 	fromEncoded(buf, &res, opts)
+
+	// Base64-PE carving: the decode pass above emits a pad-prefixed PE as a stream
+	// whose MZ lands at a non-zero offset, which YARA's pe module (anchored on MZ@0)
+	// never fires on. Carve an MZ-aligned view of any such decode-pass blob so the
+	// embedded executable is scored. Bounded, FP-safe (validates through e_lfanew).
+	carveEmbeddedPEs(&res, preDecodeLen)
 
 	// Split the synthetic PURE markers out of Streams into the out-of-band Markers
 	// channel (PLAN-marker-channel Phase 1). Done here at the single exit so every

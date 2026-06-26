@@ -535,6 +535,7 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 - [x] Local heuristics `Maldoc_Suspicious_VBA_Keywords` (olevba count heuristic) + `Maldoc_VBA_Shellcode_API` (Declare+injection-API)
 - [x] OOXML external-relationship scan (`*/_rels/*.rels`) → `OOXML_Remote_Template` rule (remote-template injection, T1221)
 - [x] Static single-layer decode pass (base64/hex/`StrReverse`) over raw + extracted streams, re-scanned (depth cap 1)
+- [x] Base64-PE carving: a decoded blob whose MZ header is pushed to a non-zero offset by a leading pad (the `pe` module anchors on MZ@0) is re-aligned and carved into an MZ@0 child for the pe rules, plus a `BASE64-PE-CARVE` marker (`Base64_Stuffed_PE` rule); validated through `e_lfanew` (zero-FP)
 - [x] VBA string folding: `Chr`/`Replace`/`Array Xor`/`StrReverse("lit")`/`Environ`→marker + **Dridex** (`DridexUrlDecode`); per-fold input clamp
 - [x] oleid structural indicators: `OLEID-OBJECTPOOL` (embedded OLE objects) + `OLEID-FLASH` (SWF) markers → `oleid_indicators.yara`
 - [x] oleid DOC_SECURITY: `SummaryInformation` PIDSI 0x13 bitfield → `OLE-DOC-SECURITY-<n>` marker + `OLE_Doc_Security` rule
