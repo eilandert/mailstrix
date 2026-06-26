@@ -49,6 +49,14 @@ const (
 	// maxContinueRecs records, so a hostile chain can't drive unbounded reads.
 	maxContinueRecs       = 64
 	maxFormulaReassembled = 1 << 16 // 64 KiB
+
+	// SHRFMLA (0x00BC) resolution caps.
+	// maxSHRFMLAEntries caps the per-macrosheet shared-formula table so a
+	// hostile file cannot drive unbounded map growth.
+	maxSHRFMLAEntries = 4096
+	// maxSHRFMLACce caps the rgce byte length accepted from a SHRFMLA record.
+	// Real shared formulas are tiny (a few dozen bytes); a huge cce is anomalous.
+	maxSHRFMLACce = 1 << 14 // 16 KiB
 )
 
 // xlmHiddenStateLabel maps BIFF hidden-state bit values (grbit byte 0, bits 0–1)
@@ -185,6 +193,112 @@ func fromBIFFXLM(ole *oleparse.OLEFile, res *Result, deadline time.Time) {
 	_ = found
 }
 
+// shrfmlaKey is the map key for the shared-formula table: anchor row/col (both
+// 0-based, as decoded from the SHRFMLA rwFirst/colFirst fields).
+type shrfmlaKey [2]uint16
+
+// parseSHRFMLARecord parses a SHRFMLA (0x00BC) record payload and returns the
+// anchor key and the rgce bytes of the shared formula body.
+//
+// SHRFMLA payload layout (MS-XLS §2.4.271):
+//
+//	rwFirst  uint16 LE  — first row of the shared range (0-based)
+//	rwLast   uint16 LE  — last row (0-based); >= rwFirst
+//	colFirst uint8      — first column (0-based)
+//	colLast  uint8      — last column; >= colFirst
+//	reserved uint8
+//	cce      uint16 LE  — byte length of rgce
+//	rgce     [cce]byte  — ptg token stream (the shared formula body)
+//
+// The extra rgcb (referenced-cell array) that follows rgce is not parsed; it
+// carries run-length cell ranges for the shared cells and carries no formula
+// content.
+//
+// Returns (key, nil) on any malformed input (fail-open). Enforces maxSHRFMLACce
+// so a hostile cce cannot drive an oversized allocation.
+func parseSHRFMLARecord(payload []byte) (key shrfmlaKey, rgce []byte, ok bool) {
+	// Minimum: rwFirst(2)+rwLast(2)+colFirst(1)+colLast(1)+reserved(1)+cce(2) = 9 bytes.
+	if len(payload) < 9 {
+		return key, nil, false
+	}
+	rwFirst := binary.LittleEndian.Uint16(payload[0:])
+	rwLast := binary.LittleEndian.Uint16(payload[2:])
+	colFirst := payload[4]
+	colLast := payload[5]
+	// payload[6] = reserved — ignored.
+	cce := int(binary.LittleEndian.Uint16(payload[7:]))
+
+	// Sanity: colLast must be >= colFirst; rwLast >= rwFirst.
+	if colLast < colFirst || rwLast < rwFirst {
+		return key, nil, false
+	}
+	if cce == 0 {
+		return key, nil, false
+	}
+	if cce > maxSHRFMLACce {
+		cce = maxSHRFMLACce
+	}
+	body := payload[9:]
+	if cce > len(body) {
+		cce = len(body)
+	}
+	if cce == 0 {
+		return key, nil, false
+	}
+	buf := make([]byte, cce)
+	copy(buf, body[:cce])
+	// Anchor is the top-left cell of the shared range: (rwFirst, colFirst).
+	key = shrfmlaKey{rwFirst, uint16(colFirst)}
+	return key, buf, true
+}
+
+// hasPtgExp reports whether rgce begins with a ptgExp token (0x01) followed by
+// 4 bytes of row/col pointer. Returns the referenced anchor row/col when true.
+// A FORMULA cell whose entire expression is a single ptgExp points at a shared
+// formula defined by a SHRFMLA record anchored at that row/col.
+func hasPtgExp(rgce []byte) (row, col uint16, ok bool) {
+	// ptgExp is 1 byte (0x01) + 2-byte row + 2-byte col = 5 bytes total.
+	if len(rgce) < 5 {
+		return 0, 0, false
+	}
+	if (rgce[0] & 0x7f) != ptgExp {
+		return 0, 0, false
+	}
+	row = binary.LittleEndian.Uint16(rgce[1:])
+	col = binary.LittleEndian.Uint16(rgce[3:])
+	return row, col, true
+}
+
+// resolveSharedFormulas replaces any biffFormulaCell whose rgce starts with
+// ptgExp with the shared formula body from the shrfmla table. Cells whose
+// pointer does not match any table entry are left unchanged (fail-open).
+//
+// Self-reference guard: the replacement body is not recursively resolved. A
+// shared body that itself contains ptgExp is NOT expanded again — it is used
+// as-is (the ptg walker treats ptgExp as opaque, pushing ""). This caps
+// recursion depth at 1 (no unbounded chain is possible).
+//
+// The function modifies the slice in place (updates the rgce field of elements
+// whose ptgExp pointer resolved). The slice header itself is not modified.
+func resolveSharedFormulas(cells []biffFormulaCell, table map[shrfmlaKey][]byte) {
+	for i := range cells {
+		row, col, ok := hasPtgExp(cells[i].rgce)
+		if !ok {
+			continue
+		}
+		key := shrfmlaKey{row, col}
+		body, found := table[key]
+		if !found {
+			continue // no matching SHRFMLA — leave as opaque ptgExp (current behaviour)
+		}
+		// Replace the ptgExp rgce with the shared formula body.
+		// Shallow copy so the table entry is not aliased to the cell.
+		buf := make([]byte, len(body))
+		copy(buf, body)
+		cells[i].rgce = buf
+	}
+}
+
 // scanBIFFXLMStream parses one BIFF Workbook/Book stream and appends XLM
 // markers and folded-formula streams to res.
 //
@@ -203,14 +317,14 @@ func fromBIFFXLM(ole *oleparse.OLEFile, res *Result, deadline time.Time) {
 // D7: FORMULA records are now collected per macrosheet substream and fed to the
 // XLM emulator as a batch (two-pass). If the emulator produces no output the
 // original one-by-one fold path is used as fallback (defense-in-depth).
-func scanBIFFXLMStream(workbookData []byte, res *Result, deadline time.Time) {
-	// biffFormulaCell holds the decoded coordinate and raw ptg bytes of one
-	// FORMULA record within a macrosheet substream, for two-pass emulation.
-	type biffFormulaCell struct {
-		coord string
-		rgce  []byte
-	}
+// biffFormulaCell holds the decoded coordinate and raw ptg bytes of one
+// FORMULA record within a macrosheet substream, for two-pass emulation.
+type biffFormulaCell struct {
+	coord string
+	rgce  []byte
+}
 
+func scanBIFFXLMStream(workbookData []byte, res *Result, deadline time.Time) {
 	r := bytes.NewReader(workbookData)
 	scanned := 0
 	records := 0
@@ -218,7 +332,8 @@ func scanBIFFXLMStream(workbookData []byte, res *Result, deadline time.Time) {
 	xlmOutput := 0        // folded-formula byte budget, separate from markers
 	sheetIndex := 0       // monotonic counter for synthetic sheet names
 
-	var macroSheetCells []biffFormulaCell // accumulator for current macrosheet
+	var macroSheetCells []biffFormulaCell       // accumulator for current macrosheet
+	shrfmlaTable := make(map[shrfmlaKey][]byte) // shared-formula table for current substream
 
 	// flushMacroSheet emits output for the cells collected from the current
 	// macrosheet substream. It tries the emulator first; if that produces no
@@ -229,6 +344,11 @@ func scanBIFFXLMStream(workbookData []byte, res *Result, deadline time.Time) {
 		}
 		cells := macroSheetCells
 		macroSheetCells = nil
+
+		// SHRFMLA resolution: replace ptgExp rgce with the shared formula body
+		// so the emulator and fold path see the actual formula content. Cells
+		// whose pointer is not in the table are left unchanged (fail-open).
+		resolveSharedFormulas(cells, shrfmlaTable)
 
 		// Build xlmCell slice using WithRefs parser so the emulator can
 		// resolve intra-sheet cell references.
@@ -291,6 +411,9 @@ func scanBIFFXLMStream(workbookData []byte, res *Result, deadline time.Time) {
 		if recType == 0x0809 {
 			flushMacroSheet() // emit/fallback for the substream we just left
 			inMacroSheet = false
+			// Reset the shared-formula table for the new substream; SHRFMLA
+			// entries from one macrosheet are not valid in another.
+			shrfmlaTable = make(map[shrfmlaKey][]byte)
 			if recLen >= 4 {
 				payload := make([]byte, recLen)
 				if _, err := io.ReadFull(r, payload); err != nil {
@@ -303,6 +426,32 @@ func scanBIFFXLMStream(workbookData []byte, res *Result, deadline time.Time) {
 				}
 			} else if _, err := r.Seek(int64(recLen), io.SeekCurrent); err != nil {
 				break
+			}
+			continue
+		}
+
+		// SHRFMLA (0x00BC): shared formula definition record. Per MS-XLS §2.4.271
+		// a SHRFMLA immediately follows the first FORMULA record for its anchor
+		// cell. Its payload defines the formula body shared by all cells in the
+		// range [rwFirst..rwLast, colFirst..colLast]. Store it in shrfmlaTable
+		// keyed by (rwFirst, colFirst) so a ptgExp pointer in a later FORMULA
+		// cell can resolve it.
+		//
+		// Only accepted inside a macrosheet substream — a SHRFMLA in a plain
+		// worksheet cannot carry XLM macro verbs and we don't want to store it.
+		if recType == 0x00BC {
+			if inMacroSheet && recLen >= 9 && len(shrfmlaTable) < maxSHRFMLAEntries {
+				payload := make([]byte, recLen)
+				if _, err := io.ReadFull(r, payload); err != nil {
+					break // malformed — fail-open
+				}
+				if key, body, ok := parseSHRFMLARecord(payload); ok {
+					shrfmlaTable[key] = body
+				}
+			} else {
+				if _, err := r.Seek(int64(recLen), io.SeekCurrent); err != nil {
+					break
+				}
 			}
 			continue
 		}
