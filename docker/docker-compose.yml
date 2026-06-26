@@ -49,6 +49,12 @@ services:
       YARAD_MBAZAAR_KEY_FILE: /run/secrets/abuse_ch_key
       # YARAD_MBAZAAR_REFRESH: "86400" # seconds; floor 300
       # YARAD_MBAZAAR_FEED: "..."      # override feed URL (default: full dump)
+      # ThreatFox — recent IOC URL/domain feed (botnet C&C indicators). Same key.
+      YARAD_THREATFOX_KEY_FILE: /run/secrets/abuse_ch_key
+      # YARAD_THREATFOX_REFRESH: "21600"  # 6h; floor 300
+      # Feodo Tracker — botnet C&C IP blocklist (public feed, no key needed).
+      # YARAD_FEODO: "1"               # enable Feodo IP blocklist (default: off)
+      # YARAD_FEODO_REFRESH: "21600"   # seconds; floor 300
 
       # --- Auth (required) --------------------------------------------------
       # yarad refuses every /scan (503) until a token is set. The rspamd plugin

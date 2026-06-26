@@ -18,7 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eilandert/rspamd-yarad/internal/feodo"
 	"github.com/eilandert/rspamd-yarad/internal/mbazaar"
+	"github.com/eilandert/rspamd-yarad/internal/threatfox"
 	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
 
@@ -318,15 +320,17 @@ func (f *fakeEngine) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, 
 	}
 	return f.matches, f.err
 }
-func (f *fakeEngine) RuleCount() int64                { return f.count }
-func (f *fakeEngine) BigFileScans() uint64            { return 0 }
-func (f *fakeEngine) RawScanErrs() uint64             { return 0 }
-func (f *fakeEngine) Fingerprint() string             { return f.fp }
-func (f *fakeEngine) ExtractMetrics() ExtractMetrics  { return ExtractMetrics{} }
-func (f *fakeEngine) ReloadMetrics() ReloadMetrics    { return ReloadMetrics{ModUnix: f.modUnix} }
-func (f *fakeEngine) URLhausMetrics() urlhaus.Metrics { return urlhaus.Metrics{} }
-func (f *fakeEngine) MBazaarMetrics() mbazaar.Metrics { return f.mb }
-func (f *fakeEngine) TopMatches(n int) []MatchCount   { return nil }
+func (f *fakeEngine) RuleCount() int64                    { return f.count }
+func (f *fakeEngine) BigFileScans() uint64                { return 0 }
+func (f *fakeEngine) RawScanErrs() uint64                 { return 0 }
+func (f *fakeEngine) Fingerprint() string                 { return f.fp }
+func (f *fakeEngine) ExtractMetrics() ExtractMetrics      { return ExtractMetrics{} }
+func (f *fakeEngine) ReloadMetrics() ReloadMetrics        { return ReloadMetrics{ModUnix: f.modUnix} }
+func (f *fakeEngine) URLhausMetrics() urlhaus.Metrics     { return urlhaus.Metrics{} }
+func (f *fakeEngine) MBazaarMetrics() mbazaar.Metrics     { return f.mb }
+func (f *fakeEngine) ThreatFoxMetrics() threatfox.Metrics { return threatfox.Metrics{} }
+func (f *fakeEngine) FeodoMetrics() feodo.Metrics         { return feodo.Metrics{} }
+func (f *fakeEngine) TopMatches(n int) []MatchCount       { return nil }
 
 func newTestServer(eng ScanEngine, token string) *Server {
 	cfg := &Config{Token: token, MaxConcurrent: 4, MaxBody: 1 << 20, BackendTimeout: 0}

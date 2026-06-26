@@ -118,6 +118,20 @@ type Config struct {
 	MBazaarRefresh time.Duration // YARAD_MBAZAAR_REFRESH (default 24h, floor 5m)
 	MBazaarFeed    string        // YARAD_MBAZAAR_FEED (URL override; default full dump)
 
+	// ThreatFox IOC lookup (abuse.ch). URL and domain IOCs from the ThreatFox
+	// recent-IOC CSV are matched against URLs extracted from scanned buffers.
+	// Complements URLhaus (delivery URLs) with botnet C&C indicators.
+	// Disabled unless an Auth-Key is set (same abuse.ch key as URLhaus).
+	ThreatFoxKey     string        // YARAD_THREATFOX_KEY[_FILE] — abuse.ch Auth-Key
+	ThreatFoxRefresh time.Duration // YARAD_THREATFOX_REFRESH (default 360m, floor 5m)
+	ThreatFoxMaxURLs int           // YARAD_THREATFOX_MAX_URLS (per message, default 64)
+
+	// Feodo Tracker IP blocklist (abuse.ch). Public feed of botnet C&C server IPs.
+	// Matches URLs with raw IP hosts against the blocklist. No auth required;
+	// set YARAD_FEODO=1 to enable.
+	FeodoEnabled bool          // YARAD_FEODO (0/1, default 0 = disabled)
+	FeodoRefresh time.Duration // YARAD_FEODO_REFRESH (default 360m, floor 5m)
+
 	// RuleDenylist suppresses matches for these rule names (case-insensitive).
 	// Public rulesets ship demo/noise rules that are pure false positives for
 	// mail — e.g. Didier Stevens' `http` rule (rtf.yara) is `$="http" nocase`,
@@ -194,6 +208,11 @@ func LoadConfig() *Config {
 		MBazaarKey:       envOrFile("YARAD_MBAZAAR_KEY"),
 		MBazaarRefresh:   envDur("YARAD_MBAZAAR_REFRESH", 86400),
 		MBazaarFeed:      strings.TrimSpace(os.Getenv("YARAD_MBAZAAR_FEED")),
+		ThreatFoxKey:     envOrFile("YARAD_THREATFOX_KEY"),
+		ThreatFoxRefresh: envDur("YARAD_THREATFOX_REFRESH", 21600),
+		ThreatFoxMaxURLs: envInt("YARAD_THREATFOX_MAX_URLS", 64),
+		FeodoEnabled:     envBool("YARAD_FEODO"),
+		FeodoRefresh:     envDur("YARAD_FEODO_REFRESH", 21600),
 		RuleDenylist:     envSet("YARAD_RULE_DENYLIST", "http"),
 		RuleAllowlist:    envSet("YARAD_RULE_ALLOWLIST", ""),
 		EffortMax:        envInt("YARAD_EFFORT_MAX", defaultEffortMax),

@@ -19,7 +19,9 @@ import (
 	yara "github.com/hillu/go-yara/v4"
 
 	"github.com/eilandert/rspamd-yarad/internal/extract"
+	"github.com/eilandert/rspamd-yarad/internal/feodo"
 	"github.com/eilandert/rspamd-yarad/internal/mbazaar"
+	"github.com/eilandert/rspamd-yarad/internal/threatfox"
 	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
 
@@ -139,6 +141,13 @@ type Scanner struct {
 
 	// Optional abuse.ch MalwareBazaar attachment-hash lookup (nil when no key).
 	mbazaar *mbazaar.Checker
+
+	// Optional abuse.ch ThreatFox IOC lookup (nil when no Auth-Key set).
+	threatfox    *threatfox.Checker
+	threatfoxMax int
+
+	// Optional abuse.ch Feodo Tracker IP blocklist (nil when not enabled).
+	feodo *feodo.Checker
 
 	// canary, when true, tags every surviving match with yarad_canary=1 so the
 	// rspamd plugin routes them all to weight-0 (shadow/observe-only mode).
@@ -340,6 +349,9 @@ func NewScanner(cfg *Config, logf func(string, ...any)) (*Scanner, error) {
 		urlhausMax:       cfg.URLhausMaxURLs,
 		effortMax:        cfg.EffortMax,
 		mbazaar:          mbazaar.New(cfg.MBazaarKey, cfg.MBazaarRefresh, cfg.MBazaarFeed, cfg.CacheDir, logf), // nil if no key
+		threatfox:        threatfox.New(cfg.ThreatFoxKey, cfg.ThreatFoxRefresh, cfg.CacheDir, logf),            // nil if no key
+		threatfoxMax:     cfg.ThreatFoxMaxURLs,
+		feodo:            feodo.New(cfg.FeodoEnabled, cfg.URLhausKey, cfg.FeodoRefresh, cfg.CacheDir, logf), // nil if not enabled
 		canary:           cfg.Canary,
 		baseDenylist:     cfg.RuleDenylist,
 		denylistFile:     cfg.DenylistFile,
@@ -367,6 +379,12 @@ func NewScanner(cfg *Config, logf func(string, ...any)) (*Scanner, error) {
 	}
 	if s.mbazaar != nil {
 		logf("MalwareBazaar attachment-hash lookup enabled (refresh=%s)", cfg.MBazaarRefresh)
+	}
+	if s.threatfox != nil {
+		logf("ThreatFox IOC lookup enabled (refresh=%s, max_urls/msg=%d)", cfg.ThreatFoxRefresh, cfg.ThreatFoxMaxURLs)
+	}
+	if s.feodo != nil {
+		logf("Feodo Tracker IP blocklist enabled (refresh=%s)", cfg.FeodoRefresh)
 	}
 	if err := s.Reload(); err != nil {
 		return nil, err
@@ -1105,6 +1123,40 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 			addHits(stream)
 		}
 	}
+	// ThreatFox: URL/domain IOC lookup — botnet C&C indicators complementing URLhaus.
+	if profile.ReputationFeeds && s.threatfox != nil {
+		seenTF := make(map[string]struct{})
+		addTFHits := func(b []byte) {
+			for _, h := range s.threatfox.Check(b, s.threatfoxMax) {
+				if _, dup := seenTF[h.URL]; dup {
+					continue
+				}
+				seenTF[h.URL] = struct{}{}
+				out = append(out, Match{Rule: h.Rule(), Tags: []string{"threatfox"}, Meta: map[string]string{"url": h.URL}})
+			}
+		}
+		addTFHits(buf)
+		for _, stream := range res.Streams {
+			addTFHits(stream)
+		}
+	}
+	// Feodo Tracker: IP blocklist — URLs with raw C&C IP hosts.
+	if profile.ReputationFeeds && s.feodo != nil {
+		seenFD := make(map[string]struct{})
+		addFDHits := func(b []byte) {
+			for _, h := range s.feodo.Check(b, s.urlhausMax) {
+				if _, dup := seenFD[h.URL]; dup {
+					continue
+				}
+				seenFD[h.URL] = struct{}{}
+				out = append(out, Match{Rule: h.Rule(), Tags: []string{"feodo"}, Meta: map[string]string{"url": h.URL, "ip": h.IP}})
+			}
+		}
+		addFDHits(buf)
+		for _, stream := range res.Streams {
+			addFDHits(stream)
+		}
+	}
 	// The raw scan failed but extraction/feeds recovered nothing: preserve the
 	// original fail-open-with-error contract (the server logs it as "no match").
 	// When something WAS recovered, the matches stand — that is the whole point of
@@ -1200,6 +1252,8 @@ func (s *Scanner) ReloadDenylist() {
 func (s *Scanner) Close() {
 	s.urlhaus.Close()
 	s.mbazaar.Close()
+	s.threatfox.Close()
+	s.feodo.Close()
 }
 
 // URLhausMetrics reports the URLhaus checker's state for /metrics, or a disabled
@@ -1209,6 +1263,22 @@ func (s *Scanner) URLhausMetrics() urlhaus.Metrics {
 		return urlhaus.Metrics{}
 	}
 	return s.urlhaus.Metrics()
+}
+
+// ThreatFoxMetrics reports the ThreatFox checker's state for /metrics.
+func (s *Scanner) ThreatFoxMetrics() threatfox.Metrics {
+	if s.threatfox == nil {
+		return threatfox.Metrics{}
+	}
+	return s.threatfox.Metrics()
+}
+
+// FeodoMetrics reports the Feodo Tracker checker's state for /metrics.
+func (s *Scanner) FeodoMetrics() feodo.Metrics {
+	if s.feodo == nil {
+		return feodo.Metrics{}
+	}
+	return s.feodo.Metrics()
 }
 
 // TopMatches returns the top n most-triggered rule names since the last reload,

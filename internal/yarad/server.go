@@ -21,7 +21,9 @@ import (
 	"github.com/cespare/xxhash/v2"
 
 	"github.com/eilandert/rspamd-yarad/internal/extract"
+	"github.com/eilandert/rspamd-yarad/internal/feodo"
 	"github.com/eilandert/rspamd-yarad/internal/mbazaar"
+	"github.com/eilandert/rspamd-yarad/internal/threatfox"
 	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 
 	_ "net/http/pprof" // #nosec G108 -- handlers on DefaultServeMux; only delegated to when cfg.Pprof is set at runtime
@@ -50,6 +52,10 @@ type ScanEngine interface {
 	URLhausMetrics() urlhaus.Metrics
 	// MBazaarMetrics reports the MalwareBazaar checker state for /metrics.
 	MBazaarMetrics() mbazaar.Metrics
+	// ThreatFoxMetrics reports the ThreatFox checker state for /metrics.
+	ThreatFoxMetrics() threatfox.Metrics
+	// FeodoMetrics reports the Feodo Tracker checker state for /metrics.
+	FeodoMetrics() feodo.Metrics
 	// TopMatches returns the top n most-triggered rule names since last reload.
 	TopMatches(n int) []MatchCount
 }
@@ -806,6 +812,27 @@ func (s *Server) serveMetrics(w http.ResponseWriter) {
 		fm("malwarebazaar_refresh_failures_total", "MalwareBazaar feed refresh failures", mb.RefreshFailures)
 		gauge("malwarebazaar_feed_hashes", "known-malware SHA256 hashes in the loaded feed", mb.FeedHashes)
 		gauge("malwarebazaar_last_refresh_timestamp_seconds", "unix time of the last successful feed refresh", mb.LastRefreshUnix)
+	}
+
+	// ThreatFox IOC lookup (only meaningful when enabled).
+	tf := s.engine.ThreatFoxMetrics()
+	if tf.Enabled {
+		fm("threatfox_lookups_total", "buffers checked against the ThreatFox feed", tf.Lookups)
+		fm("threatfox_hits_total", "buffers with >=1 ThreatFox match", tf.Hits)
+		fm("threatfox_refresh_failures_total", "ThreatFox feed refresh failures", tf.RefreshFailures)
+		gauge("threatfox_feed_urls", "URLs in the loaded ThreatFox feed", tf.FeedURLs)
+		gauge("threatfox_feed_domains", "domains in the loaded ThreatFox feed", tf.FeedDomains)
+		gauge("threatfox_last_refresh_timestamp_seconds", "unix time of the last successful feed refresh", tf.LastRefreshUnix)
+	}
+
+	// Feodo Tracker IP blocklist (only meaningful when enabled).
+	fd := s.engine.FeodoMetrics()
+	if fd.Enabled {
+		fm("feodo_lookups_total", "buffers checked against the Feodo Tracker blocklist", fd.Lookups)
+		fm("feodo_hits_total", "buffers with >=1 Feodo match", fd.Hits)
+		fm("feodo_refresh_failures_total", "Feodo Tracker feed refresh failures", fd.RefreshFailures)
+		gauge("feodo_feed_ips", "C&C IPs in the loaded Feodo Tracker blocklist", fd.FeedIPs)
+		gauge("feodo_last_refresh_timestamp_seconds", "unix time of the last successful feed refresh", fd.LastRefreshUnix)
 	}
 	writeRaw(w, http.StatusOK, "text/plain; version=0.0.4", []byte(b.String()))
 }
