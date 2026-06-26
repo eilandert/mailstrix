@@ -573,6 +573,7 @@ jobs:
             lua5.4 rspamd/test/yara_dedup_spec.lua
             lua5.4 rspamd/test/yara_effort_spec.lua
             lua5.4 rspamd/test/yara_explain_spec.lua
+            lua5.4 rspamd/test/yara_feed_routing_spec.lua
           '
 
       - name: spamassassin plugin (perl -c + http/shellout unit tests)

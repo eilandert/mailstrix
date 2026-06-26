@@ -481,6 +481,13 @@ on top of the YARA rules:
 - **MalwareBazaar** (`YARAD_MBAZAAR_KEY`, same key) — checks each attachment's
   SHA256 against the known-malware corpus. Hit: `MALWAREBAZAAR_MALWARE`, digest
   in `meta.sha256`.
+- **ThreatFox** (`YARAD_THREATFOX_KEY`, same key) — checks URLs/domains in every
+  message and stream against the ThreatFox IOC feed. Hits: `THREATFOX_IOC_URL`,
+  `_DOMAIN`, `_DEOBF`; matched URL in `meta.url`. Routes to the `THREATFOX_IOC`
+  symbol.
+- **Feodo Tracker** (`YARAD_FEODO=1`, opt-in) — checks each URL's host IP against
+  the botnet C&C blocklist. Hits: `FEODO_CC_IP`, `_DEOBF`; IP in `meta.ip`, URL
+  in `meta.url`. Routes to the `FEODO_CC_IP` symbol.
 
 Both use the same fail-open cached-feed design: the feed is downloaded once per
 refresh interval into an in-memory set (lookups are local map hits, never a
@@ -503,6 +510,9 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
   | `YARA` | uncategorized match (default) | `4.0` |
   | `YARA_SUSPICIOUS` | heuristic / anomaly (FP-prone) | `2.0` |
   | `URLHAUS_MALWARE_URL` | known malware URL (options = the URLs) | `8.0` |
+  | `MALWAREBAZAAR_MALWARE` | attachment SHA256 = known sample (option = digest) | `10.0` |
+  | `THREATFOX_IOC` | ThreatFox URL/domain IOC (options = the URLs) | `7.0` |
+  | `FEODO_CC_IP` | URL host IP on the Feodo C&C blocklist (option = the IP) | `8.0` |
 
   Tiers stack, capped by the group `max_score`. The classifier lives in the
   plugin, so retuning is just an rspamd reload (no yarad rebuild).

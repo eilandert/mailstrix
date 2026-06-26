@@ -62,6 +62,14 @@ local settings = {
   -- "MALWAREBAZAAR_MALWARE"): an exact SHA256 match of the attachment against a
   -- known malware sample — a strong, standalone verdict.
   mbazaar_symbol = "MALWAREBAZAAR_MALWARE",
+  -- Separate symbol for yarad's ThreatFox IOC hits (rule names start
+  -- "THREATFOX_"): a URL/domain in the message or macro matched abuse.ch
+  -- ThreatFox. Routed to its own feed tier so it scores on an operator-tunable
+  -- weight, not the generic YARA classification.
+  threatfox_symbol = "THREATFOX_IOC",
+  -- Separate symbol for yarad's Feodo Tracker hits (rule names start "FEODO_"):
+  -- a URL whose host IP matched the abuse.ch Feodo botnet C&C blocklist.
+  feodo_symbol = "FEODO_CC_IP",
   -- Log-only symbol for rules yarad has allowlisted (meta.yarad_allow="1", set
   -- by YARAD_RULE_ALLOWLIST): the match is still surfaced (visible in history)
   -- but routed here so groups.conf can score it 0 — a known-FP rule demoted
@@ -373,6 +381,26 @@ local function check_cb(task)
             -- option, deduped on the hash, so the history names the bad file.
             local sha = (type(m.meta) == "table" and m.meta.sha256) or m.rule
             add(settings.mbazaar_symbol, sha, "mb:" .. sha)
+          elseif m.rule:sub(1, 10) == "THREATFOX_" then
+            -- ThreatFox IOC: the matched URL/domain is the interesting datum;
+            -- show it as the option, deduped on the URL. _DOMAIN = host-level
+            -- match, _DEOBF = found only after defanging (more suspicious).
+            local url = (type(m.meta) == "table" and m.meta.url) or m.rule
+            local tag = ""
+            if m.rule:find("_DOMAIN") then tag = tag .. " (domain)" end
+            if m.rule:find("_DEOBF") then tag = tag .. " (deobf)" end
+            add(settings.threatfox_symbol, url .. tag, "tf:" .. url)
+          elseif m.rule:sub(1, 6) == "FEODO_" then
+            -- Feodo Tracker: a URL whose host IP is a known botnet C&C. Show the
+            -- blocked IP as the option (deduped on it), with the URL appended for
+            -- context; _DEOBF = matched only after defanging.
+            local ip = (type(m.meta) == "table" and m.meta.ip) or m.rule
+            local url = (type(m.meta) == "table" and m.meta.url) or ""
+            local tag = ""
+            if m.rule:find("_DEOBF") then tag = tag .. " (deobf)" end
+            local opt = ip
+            if url ~= "" then opt = ip .. " <" .. url .. ">" end
+            add(settings.feodo_symbol, opt .. tag, "feodo:" .. ip)
           else
             -- Classify into a scoring tier, and show "rule (source-file)" so a
             -- generic rule name (e.g. "http") is traceable to the ruleset that
@@ -464,6 +492,8 @@ for _, s in ipairs({
   settings.symbol_suspicious,
   settings.urlhaus_symbol,
   settings.mbazaar_symbol,
+  settings.threatfox_symbol,
+  settings.feodo_symbol,
   settings.allow_symbol,
 }) do
   rspamd_config:register_symbol({ name = s, type = "virtual", parent = id })
