@@ -23,6 +23,7 @@ import (
 	"github.com/eilandert/rspamd-yarad/internal/feodo"
 	"github.com/eilandert/rspamd-yarad/internal/mbazaar"
 	"github.com/eilandert/rspamd-yarad/internal/threatfox"
+	"github.com/eilandert/rspamd-yarad/internal/urlcand"
 	"github.com/eilandert/rspamd-yarad/internal/urlhaus"
 )
 
@@ -1237,58 +1238,73 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 			out = append(out, Match{Rule: h.Rule(), Tags: []string{"malwarebazaar"}, Meta: map[string]string{"sha256": h.SHA256}})
 		}
 	}
-	// URLhaus: check the raw message and every decompressed macro/RTF stream for
-	// known malware-distribution URLs (incl. defanged ones). Each distinct URL
-	// becomes its own match (deduped across buffers) so the mail history shows
-	// exactly which URLs hit.
-	if profile.ReputationFeeds && s.urlhaus != nil {
-		seenURL := make(map[string]struct{})
-		addHits := func(b []byte) {
-			for _, h := range s.urlhaus.Check(b, s.urlhausMax) {
-				if _, dup := seenURL[h.URL]; dup {
-					continue
+	// Reputation feeds: URLhaus, ThreatFox, Feodo. URL candidates are extracted
+	// ONCE per buffer (raw + defanged pass) and fanned to all three checkers,
+	// eliminating 3× redundant regex walks and 3× full-buffer defang copies.
+	// Each feed still deduplicates across buffers via its own seenX map.
+	if profile.ReputationFeeds && (s.urlhaus != nil || s.threatfox != nil || s.feodo != nil) {
+		// maxN is the largest per-feed budget; Extract uses it so the candidate
+		// list is long enough for any single checker. Each checker truncates to
+		// its own (smaller) budget via the maxURLs argument to CheckCandidates.
+		// feodo reuses s.urlhausMax (same as the old code).
+		maxN := s.urlhausMax
+		if s.threatfoxMax > maxN {
+			maxN = s.threatfoxMax
+		}
+
+		var seenURL, seenTF, seenFD map[string]struct{}
+		if s.urlhaus != nil {
+			seenURL = make(map[string]struct{})
+		}
+		if s.threatfox != nil {
+			seenTF = make(map[string]struct{})
+		}
+		if s.feodo != nil {
+			seenFD = make(map[string]struct{})
+		}
+
+		// addFeedHits extracts URL candidates from b once and fans to all enabled
+		// checkers. URLhaus: check the raw message and every decompressed
+		// macro/RTF stream for known malware-distribution URLs (incl. defanged).
+		// Each distinct URL becomes its own match (deduped across buffers) so the
+		// mail history shows exactly which URLs hit.
+		addFeedHits := func(b []byte) {
+			cands := urlcand.Extract(b, maxN)
+
+			// URLhaus: known malware-distribution URLs.
+			if s.urlhaus != nil {
+				for _, h := range s.urlhaus.CheckCandidates(cands, s.urlhausMax) {
+					if _, dup := seenURL[h.URL]; dup {
+						continue
+					}
+					seenURL[h.URL] = struct{}{}
+					out = append(out, Match{Rule: h.Rule(), Tags: []string{"urlhaus"}, Meta: map[string]string{"url": h.URL}})
 				}
-				seenURL[h.URL] = struct{}{}
-				out = append(out, Match{Rule: h.Rule(), Tags: []string{"urlhaus"}, Meta: map[string]string{"url": h.URL}})
+			}
+			// ThreatFox: URL/domain IOC lookup — botnet C&C indicators.
+			if s.threatfox != nil {
+				for _, h := range s.threatfox.CheckCandidates(cands, s.threatfoxMax) {
+					if _, dup := seenTF[h.URL]; dup {
+						continue
+					}
+					seenTF[h.URL] = struct{}{}
+					out = append(out, Match{Rule: h.Rule(), Tags: []string{"threatfox"}, Meta: map[string]string{"url": h.URL}})
+				}
+			}
+			// Feodo Tracker: IP blocklist — URLs with raw C&C IP hosts.
+			if s.feodo != nil {
+				for _, h := range s.feodo.CheckCandidates(cands, s.urlhausMax) {
+					if _, dup := seenFD[h.URL]; dup {
+						continue
+					}
+					seenFD[h.URL] = struct{}{}
+					out = append(out, Match{Rule: h.Rule(), Tags: []string{"feodo"}, Meta: map[string]string{"url": h.URL, "ip": h.IP}})
+				}
 			}
 		}
-		addHits(buf)
+		addFeedHits(buf)
 		for _, stream := range res.Streams {
-			addHits(stream)
-		}
-	}
-	// ThreatFox: URL/domain IOC lookup — botnet C&C indicators complementing URLhaus.
-	if profile.ReputationFeeds && s.threatfox != nil {
-		seenTF := make(map[string]struct{})
-		addTFHits := func(b []byte) {
-			for _, h := range s.threatfox.Check(b, s.threatfoxMax) {
-				if _, dup := seenTF[h.URL]; dup {
-					continue
-				}
-				seenTF[h.URL] = struct{}{}
-				out = append(out, Match{Rule: h.Rule(), Tags: []string{"threatfox"}, Meta: map[string]string{"url": h.URL}})
-			}
-		}
-		addTFHits(buf)
-		for _, stream := range res.Streams {
-			addTFHits(stream)
-		}
-	}
-	// Feodo Tracker: IP blocklist — URLs with raw C&C IP hosts.
-	if profile.ReputationFeeds && s.feodo != nil {
-		seenFD := make(map[string]struct{})
-		addFDHits := func(b []byte) {
-			for _, h := range s.feodo.Check(b, s.urlhausMax) {
-				if _, dup := seenFD[h.URL]; dup {
-					continue
-				}
-				seenFD[h.URL] = struct{}{}
-				out = append(out, Match{Rule: h.Rule(), Tags: []string{"feodo"}, Meta: map[string]string{"url": h.URL, "ip": h.IP}})
-			}
-		}
-		addFDHits(buf)
-		for _, stream := range res.Streams {
-			addFDHits(stream)
+			addFeedHits(stream)
 		}
 	}
 	// The raw scan failed but extraction/feeds recovered nothing: preserve the

@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +29,7 @@ import (
 	"time"
 
 	"github.com/eilandert/rspamd-yarad/internal/atomicio"
+	"github.com/eilandert/rspamd-yarad/internal/urlcand"
 )
 
 const (
@@ -250,11 +250,16 @@ func isIP(s string) bool {
 	return dots == 3
 }
 
-var urlRe = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>)\]}\x00-\x1f]+`)
-
-// Check extracts URLs from data (and a defanged copy), and reports any whose
-// host is a raw IP address listed in the Feodo blocklist. maxURLs bounds work.
+// Check extracts URLs from data (and a defanged copy) via urlcand.Extract,
+// and reports any whose host is a raw IP address in the Feodo blocklist.
+// maxURLs bounds work. Delegates to CheckCandidates.
 func (c *Checker) Check(data []byte, maxURLs int) []Hit {
+	return c.CheckCandidates(urlcand.Extract(data, maxURLs), maxURLs)
+}
+
+// CheckCandidates reports Feodo hits for pre-extracted URL candidates.
+// cands is produced by urlcand.Extract; maxURLs caps how many are processed.
+func (c *Checker) CheckCandidates(cands []urlcand.Candidate, maxURLs int) []Hit {
 	c.lookups.Add(1)
 	rs := c.rs.Load()
 	if rs == nil || len(rs.ips) == 0 {
@@ -266,30 +271,23 @@ func (c *Checker) Check(data []byte, maxURLs int) []Hit {
 
 	var out []Hit
 	seen := make(map[string]struct{})
-	check := func(text []byte, deobf bool, budget *int) {
-		for _, m := range urlRe.FindAll(text, *budget) {
-			if *budget <= 0 {
-				return
-			}
-			*budget--
-			norm, ip := extractIP(string(m))
-			if ip == "" {
-				continue
-			}
-			if _, dup := seen[norm]; dup {
-				continue
-			}
-			seen[norm] = struct{}{}
-			if _, ok := rs.ips[ip]; ok {
-				out = append(out, Hit{URL: norm, IP: ip, Deobf: deobf})
-			}
-		}
-	}
-
 	budget := maxURLs
-	check(data, false, &budget)
-	if defanged := defang(data); defanged != "" {
-		check([]byte(defanged), true, &budget)
+	for _, cand := range cands {
+		if budget <= 0 {
+			break
+		}
+		budget--
+		norm, ip := extractIP(cand.Raw)
+		if ip == "" {
+			continue
+		}
+		if _, dup := seen[norm]; dup {
+			continue
+		}
+		seen[norm] = struct{}{}
+		if _, ok := rs.ips[ip]; ok {
+			out = append(out, Hit{URL: norm, IP: ip, Deobf: cand.Deobf})
+		}
 	}
 	if len(out) > 0 {
 		c.hits.Add(1)
@@ -326,24 +324,6 @@ func extractIP(raw string) (norm, ip string) {
 
 func defaultPort(scheme, port string) bool {
 	return (scheme == "http" && port == "80") || (scheme == "https" && port == "443")
-}
-
-func defang(data []byte) string {
-	if !bytes.ContainsAny(data, "[({xX") {
-		return ""
-	}
-	s := string(data)
-	r := strings.NewReplacer(
-		"hxxps", "https", "hXXps", "https", "hxxp", "http", "hXXp", "http",
-		"[.]", ".", "(.)", ".", "{.}", ".",
-		"[dot]", ".", "(dot)", ".", "{dot}", ".", "[DOT]", ".", " dot ", ".",
-		"[:]", ":", "[://]", "://",
-	)
-	out := r.Replace(s)
-	if out == s {
-		return ""
-	}
-	return out
 }
 
 // Metrics returns a snapshot for /metrics.

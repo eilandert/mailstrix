@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/eilandert/rspamd-yarad/internal/urlcand"
 )
 
 // TestWarmStartFromCache: a persisted feed snapshot in cacheDir is loaded into
@@ -172,9 +174,11 @@ func BenchmarkCheckNoDefang(b *testing.B) {
 	if bytes.ContainsAny(buf, "[({xX") {
 		b.Fatal("bench buffer contains defang trigger bytes — fix URLs or noise")
 	}
-	// Confirm defang truly skips its string() copy path.
-	if defang(buf) != "" {
-		b.Fatal("bench buffer unexpectedly triggers defang output")
+	// Confirm urlcand.Extract produces no deobf candidates (defang gate skips).
+	for _, c := range urlcand.Extract(buf, 64) {
+		if c.Deobf {
+			b.Fatal("bench buffer unexpectedly triggers defang output")
+		}
 	}
 	b.SetBytes(int64(bodySize))
 	b.ReportAllocs()
