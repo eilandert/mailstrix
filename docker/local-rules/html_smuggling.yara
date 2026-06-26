@@ -36,6 +36,20 @@ rule HTML_Smuggling_DataURI : html smuggling heuristic suspicious marker
         filesize < 16MB and $marker
 }
 
+rule HTML_DataURI_Container : html smuggling heuristic suspicious marker
+{
+    meta:
+        author      = "yarad"
+        description = "HTML smuggling: base64 data: URI in plain HTML decoding to a container payload (PK/OLE2/MZ/%PDF) without a download attribute"
+        reference   = "https://attack.mitre.org/techniques/T1027/006/"
+        tier        = "suspicious"
+        score       = "60"
+    strings:
+        $marker = "HTML-DATAURI-CONTAINER" ascii
+    condition:
+        filesize < 16MB and $marker
+}
+
 rule SVG_Scripted : svg smuggling heuristic suspicious marker
 {
     meta:

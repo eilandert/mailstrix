@@ -79,6 +79,7 @@ var parityMarkers = map[string]markerKind{
 	"MSD-DEEPDECODE":              contractMarker, // intent.yara Multilayer_Encoded_Payload
 	"HTML-SMUGGLING-BLOB":         contractMarker, // html_smuggling.yara HTML_Smuggling_Blob
 	"HTML-SMUGGLING-DATAURI":      contractMarker, // html_smuggling.yara HTML_Smuggling_DataURI
+	"HTML-DATAURI-CONTAINER":      contractMarker, // html_smuggling.yara HTML_DataURI_Container
 	"SVG-SCRIPT":                  contractMarker, // html_smuggling.yara SVG_Scripted
 	"SVG-EMBEDDED-PAYLOAD":        contractMarker, // html_smuggling.yara SVG_Embedded_Payload
 	"ARCHIVE-ENCRYPTED":           contractMarker, // archive_indicators.yara Archive_Encrypted
