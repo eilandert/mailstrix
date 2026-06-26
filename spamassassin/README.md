@@ -68,6 +68,15 @@ transport for both Sieve and SpamAssassin.
    mode) in the report, and an `X-Spam-Yara:` header listing the fired YARA rule
    names.
 
+   For development, hermetic unit tests (no running yarad — http mode mocks
+   `HTTP::Tiny`, shellout mode uses fake `yarad-scan` scripts) live in
+   [`t/yarad.t`](t/yarad.t) and run in CI alongside `perl -c`:
+
+   ```sh
+   perl -I . -c Yarad.pm                 # syntax check against Mail::SpamAssassin
+   prove -v -I . t/yarad.t               # verdict mapping + both transport modes
+   ```
+
 ## Scoring
 
 A YARA malware match is high-confidence, so the shipped scores (`YARAD 5.0`,

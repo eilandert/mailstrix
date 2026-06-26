@@ -575,6 +575,18 @@ jobs:
             lua5.4 rspamd/test/yara_explain_spec.lua
           '
 
+      - name: spamassassin plugin (perl -c + http/shellout unit tests)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src debian:trixie-slim sh -c '
+            apt-get update >/dev/null 2>&1
+            apt-get install -y --no-install-recommends spamassassin libhttp-tiny-perl perl >/dev/null 2>&1
+            # Syntax-check the plugin against the installed Mail::SpamAssassin.
+            perl -I spamassassin -c spamassassin/Yarad.pm
+            # Hermetic unit tests: http mode via a mocked HTTP::Tiny, shellout mode
+            # via fake yarad-scan scripts. No running yarad needed.
+            prove -v -I spamassassin spamassassin/t/yarad.t
+          '
+
       - name: semgrep (non-blocking until tuned)
         continue-on-error: true
         run: |
