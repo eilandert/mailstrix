@@ -614,7 +614,7 @@ func addSource(h hash.Hash, file, dir string) {
 		_, _ = h.Write(b)
 	}
 	if file != "" {
-		if b, err := os.ReadFile(file); err == nil {
+		if b, err := os.ReadFile(file); err == nil { // #nosec G304 -- operator-configured rules path, not attacker input
 			writeChunk(filepath.Base(file), b)
 		}
 		return
@@ -638,7 +638,7 @@ func addSource(h hash.Hash, file, dir string) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
+		if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil { // #nosec G304 -- operator-configured rules dir, not attacker input
 			writeChunk(name, b)
 		}
 	}
