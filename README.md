@@ -61,7 +61,7 @@ be scaled, restarted, or reload its rules on its own. Same shape as the
   ([`rspamd/`](rspamd/)) wires the hits into the spam score, or the `yarad-scan`
   client scans at delivery from Dovecot/Sieve ([`sieve/`](sieve/)).
 - **Ships ~10k public rules baked in** — YARA-Forge, signature-base, ANY.RUN,
-  Didier Stevens, bartblaze, InQuest; precompiled `.yac`, daily refresh.
+  Didier Stevens, bartblaze, InQuest, CAPEv2, YARAify; precompiled `.yac`, daily refresh.
 - **Decompresses Office macros before matching** — MS-OVBA VBA out of
   `.docm`/`.xlsm`/`.doc`/`.xls`, scans the cleartext (sets the `VBA` rule var).
 - **Cracks open containers** — pulls the hidden payload out of: OLE2/OOXML,
@@ -239,7 +239,7 @@ Every setting is an env var and a `serve` CLI flag (flag > env > default).
 | `YARAD_MAX_INFLIGHT` | `auto` (2× concurrent) | max in-flight requests (admission gate); kept above the scan gate so a slow body/Redis can't starve scans |
 | `YARAD_MAX_BODY` | `8388608` (8 MiB) | max request body, in bytes (checked before reading) |
 | `YARAD_EFFORT_MAX` | `10` | effort-tier ceiling (1–10); the hard cap a per-request `X-YARAD-Effort` header can never exceed (DoS guard) |
-| `YARAD_EFFORT` | `= YARAD_EFFORT_MAX` | default effort level when no `X-YARAD-Effort` header is sent (1 = raw + shallowest extraction, max = full depth). Set to `auto` (EFFORT-2) to derive the level from admission-gate pressure — full depth when idle, shedding a level at a time as in-flight scans fill the gate, climbing back as it drains (one level/scan; `yarad_effort_auto_level` gauge tracks it). *Plumbing landed (EFFORT-1/2); caps wire to it in EFFORT-4 — until then all levels behave identically.* |
+| `YARAD_EFFORT` | `= YARAD_EFFORT_MAX` | default effort level when no `X-YARAD-Effort` header is sent (1 = raw + shallowest extraction, max = full depth). Set to `auto` (EFFORT-2) to derive the level from admission-gate pressure — full depth when idle, shedding a level at a time as in-flight scans fill the gate, climbing back as it drains (one level/scan; `yarad_effort_auto_level` gauge tracks it). The level scales real work: decode depth, XLM/PDF clamps, reputation feeds and scan timeout are all wired to the resolved profile (EFFORT-4), so a lower level genuinely does less. |
 | `YARAD_CACHE_TTL` | `600` (s) | verdict cache TTL; `0` disables caching |
 | `YARAD_CACHE_SIZE` | `65536` | in-memory LRU entries |
 | `YARAD_REDIS_URL` | — | optional shared L2 cache, e.g. `redis://host:6379/6` |
@@ -265,10 +265,12 @@ edit can't disarm a running scanner. On SIGTERM/SIGINT yarad drains (`/ready` �
 ## Sizing profiles
 
 `YARAD_MAX_CONCURRENT` defaults to the CPU count (`auto`). On a many-core host
-(32+ CPUs) that reserves significant memory: each concurrent scan can hold up to
-`MAX_BODY` bytes in RAM, so peak resident is roughly `MAX_CONCURRENT × MAX_BODY +
-64 MB` overhead. Size `mem_limit` accordingly and pin `MAX_CONCURRENT` explicitly
-when the default is too aggressive.
+(32+ CPUs) that reserves significant memory. The request-buffer ceiling is set by
+the admission gate, not the scan gate: up to `MAX_INFLIGHT` requests can each hold
+a full body plus its extracted streams, so the startup log estimates peak resident
+as roughly `MAX_INFLIGHT × MAX_BODY + RSS` (the loaded-rules resident set). Size
+`mem_limit` accordingly and pin `MAX_CONCURRENT`/`MAX_INFLIGHT` explicitly when the
+defaults are too aggressive.
 
 `YARAD_MAX_INFLIGHT` (default `2×MAX_CONCURRENT`) is the admission gate — excess
 requests receive a `503` immediately rather than queuing. Keep it above
@@ -299,7 +301,7 @@ Notes:
 
 ## Rules
 
-The image bakes six public rulesets at build time; a daily rebuild
+The image bakes eight public rulesets at build time; a daily rebuild
 (`--build-arg CACHEBUST=$(date +%s)`) re-pulls the latest. **Full credit to the
 authors — yarad only packages their work.** Each set keeps its own license:
 
@@ -311,9 +313,11 @@ authors — yarad only packages their work.** Each set keeps its own license:
 | **Didier Stevens Suite** | [DidierStevens/DidierStevensSuite](https://github.com/DidierStevens/DidierStevensSuite) | public domain | OLE/RTF/maldoc + the `vba.yara` macro set (`DIDIER=0` to skip) |
 | **bartblaze/Yara-rules** | [bartblaze/Yara-rules](https://github.com/bartblaze/Yara-rules) | MIT | maldoc/RTF + phishing-doc not in YARA-Forge (`BARTBLAZE=0`) |
 | **InQuest yara-rules-vt** | [InQuest/yara-rules-vt](https://github.com/InQuest/yara-rules-vt) | MIT | curated mail subset: PDF/LNK/OneNote/`.msg`/RTF (`INQUEST=0`) |
+| **CAPEv2** | [kevoreilly/CAPEv2](https://github.com/kevoreilly/CAPEv2) | BSD-3-Clause | curated mail-relevant family rules (Guloader/Formbook/AgentTesla/Obfuscar); raw-fetched, not the full sandbox (`CAPE=0`) |
+| **YARAify** | [abuse.ch YARAhub](https://yaraify.abuse.ch/yarahub/) | CC0 | abuse.ch community feed, refreshed daily (`YARAIFY=0`) |
 
 Roughly 10,000+ rules total. Pin or toggle any source with a build arg
-(`YARAFORGE_SET`, `*_REF`, `DIDIER=0`/`BARTBLAZE=0`/`ANYRUN=0`/`INQUEST=0`).
+(`YARAFORGE_SET`, `*_REF`, `DIDIER=0`/`BARTBLAZE=0`/`ANYRUN=0`/`INQUEST=0`/`CAPE=0`/`YARAIFY=0`).
 
 On top of the public sets, yarad bakes its own local heuristics from
 `docker/local-rules/`:
