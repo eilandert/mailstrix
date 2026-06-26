@@ -26,7 +26,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +33,7 @@ import (
 	"time"
 
 	"github.com/eilandert/rspamd-yarad/internal/atomicio"
+	"github.com/eilandert/rspamd-yarad/internal/urlcand"
 )
 
 const (
@@ -255,11 +255,16 @@ func parseFeed(r io.Reader) (*ruleset, error) {
 	return rs, nil
 }
 
-var urlRe = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>)\]}\x00-\x1f]+`)
-
-// Check extracts URLs from data (and from a cheaply-defanged copy), looks each
-// up in the feed, and returns the matches. maxURLs bounds work per buffer.
+// Check extracts URLs from data (and from a cheaply-defanged copy) via
+// urlcand.Extract, looks each up in the feed, and returns the matches.
+// maxURLs bounds work per buffer. Delegates to CheckCandidates.
 func (c *Checker) Check(data []byte, maxURLs int) []Hit {
+	return c.CheckCandidates(urlcand.Extract(data, maxURLs), maxURLs)
+}
+
+// CheckCandidates looks up pre-extracted URL candidates in the feed. cands is
+// produced by urlcand.Extract; maxURLs caps how many candidates are processed.
+func (c *Checker) CheckCandidates(cands []urlcand.Candidate, maxURLs int) []Hit {
 	c.lookups.Add(1)
 	rs := c.rs.Load()
 	if rs == nil || (len(rs.urls) == 0 && len(rs.domains) == 0) {
@@ -271,55 +276,30 @@ func (c *Checker) Check(data []byte, maxURLs int) []Hit {
 
 	var out []Hit
 	seen := make(map[string]struct{})
-	check := func(text []byte, deobf bool, budget *int) {
-		for _, m := range urlRe.FindAll(text, *budget) {
-			if *budget <= 0 {
-				return
-			}
-			*budget--
-			norm, host := normalizeURL(string(m))
-			if norm == "" {
-				continue
-			}
-			if _, dup := seen[norm]; dup {
-				continue
-			}
-			seen[norm] = struct{}{}
-			if _, ok := rs.urls[norm]; ok {
-				out = append(out, Hit{URL: norm, Deobf: deobf})
-			} else if host != "" {
-				if _, ok := rs.domains[host]; ok {
-					out = append(out, Hit{URL: host, Host: true, Deobf: deobf})
-				}
+	budget := maxURLs
+	for _, cand := range cands {
+		if budget <= 0 {
+			break
+		}
+		budget--
+		norm, host := normalizeURL(cand.Raw)
+		if norm == "" {
+			continue
+		}
+		if _, dup := seen[norm]; dup {
+			continue
+		}
+		seen[norm] = struct{}{}
+		if _, ok := rs.urls[norm]; ok {
+			out = append(out, Hit{URL: norm, Deobf: cand.Deobf})
+		} else if host != "" {
+			if _, ok := rs.domains[host]; ok {
+				out = append(out, Hit{URL: host, Host: true, Deobf: cand.Deobf})
 			}
 		}
 	}
-
-	budget := maxURLs
-	check(data, false, &budget)
-	if defanged := defang(data); defanged != "" {
-		check([]byte(defanged), true, &budget)
-	}
 	if len(out) > 0 {
 		c.hits.Add(1)
-	}
-	return out
-}
-
-func defang(data []byte) string {
-	if !bytes.ContainsAny(data, "[({xX") {
-		return ""
-	}
-	s := string(data)
-	r := strings.NewReplacer(
-		"hxxps", "https", "hXXps", "https", "hxxp", "http", "hXXp", "http",
-		"[.]", ".", "(.)", ".", "{.}", ".",
-		"[dot]", ".", "(dot)", ".", "{dot}", ".", "[DOT]", ".", " dot ", ".",
-		"[:]", ":", "[://]", "://",
-	)
-	out := r.Replace(s)
-	if out == s {
-		return ""
 	}
 	return out
 }

@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +31,7 @@ import (
 	"time"
 
 	"github.com/eilandert/rspamd-yarad/internal/atomicio"
+	"github.com/eilandert/rspamd-yarad/internal/urlcand"
 )
 
 const (
@@ -275,12 +275,19 @@ func looksURL(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
 
-var urlRe = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>)\]}\x00-\x1f]+`)
-
-// Check extracts URLs from data (and from a cheaply-defanged copy), looks each
-// up in the feed, and returns the matches. maxURLs bounds the work per buffer.
-// It is safe for concurrent use.
+// Check extracts URLs from data (and from a cheaply-defanged copy) via
+// urlcand.Extract, looks each up in the feed, and returns the matches.
+// maxURLs bounds the work per buffer. It is safe for concurrent use.
+// Delegates to CheckCandidates.
 func (c *Checker) Check(data []byte, maxURLs int) []Hit {
+	return c.CheckCandidates(urlcand.Extract(data, maxURLs), maxURLs)
+}
+
+// CheckCandidates looks up pre-extracted URL candidates in the feed. cands is
+// produced by urlcand.Extract; maxURLs caps how many candidates are processed.
+// A shared dedup map prevents duplicate normalized URLs across the candidate
+// list. c.hits is incremented if any hit is found.
+func (c *Checker) CheckCandidates(cands []urlcand.Candidate, maxURLs int) []Hit {
 	c.lookups.Add(1)
 	rs := c.rs.Load()
 	if rs == nil || (len(rs.urls) == 0 && len(rs.hosts) == 0) {
@@ -292,62 +299,30 @@ func (c *Checker) Check(data []byte, maxURLs int) []Hit {
 
 	var out []Hit
 	seen := make(map[string]struct{})
-	check := func(text []byte, deobf bool, budget *int) {
-		for _, m := range urlRe.FindAll(text, *budget) {
-			if *budget <= 0 {
-				return
-			}
-			*budget--
-			norm, host := normalizeURL(string(m))
-			if norm == "" {
-				continue
-			}
-			if _, dup := seen[norm]; dup {
-				continue
-			}
-			seen[norm] = struct{}{}
-			if _, ok := rs.urls[norm]; ok {
-				out = append(out, Hit{URL: norm, Deobf: deobf})
-			} else if host != "" {
-				if _, ok := rs.hosts[host]; ok {
-					out = append(out, Hit{URL: host, Host: true, Deobf: deobf})
-				}
+	budget := maxURLs
+	for _, cand := range cands {
+		if budget <= 0 {
+			break
+		}
+		budget--
+		norm, host := normalizeURL(cand.Raw)
+		if norm == "" {
+			continue
+		}
+		if _, dup := seen[norm]; dup {
+			continue
+		}
+		seen[norm] = struct{}{}
+		if _, ok := rs.urls[norm]; ok {
+			out = append(out, Hit{URL: norm, Deobf: cand.Deobf})
+		} else if host != "" {
+			if _, ok := rs.hosts[host]; ok {
+				out = append(out, Hit{URL: host, Host: true, Deobf: cand.Deobf})
 			}
 		}
 	}
-
-	budget := maxURLs
-	check(data, false, &budget)
-	// Defanged copy: surface URLs written as hxxp://, host[.]tld, host(dot)tld.
-	if defanged := defang(data); defanged != "" {
-		check([]byte(defanged), true, &budget)
-	}
 	if len(out) > 0 {
 		c.hits.Add(1)
-	}
-	return out
-}
-
-// defang rewrites the common URL-obfuscations malware uses in document code back
-// to a scannable form. Returns "" when nothing changed (so the caller skips a
-// redundant second pass). Cheap and bounded: plain string replacement only.
-func defang(data []byte) string {
-	// Check on the raw bytes BEFORE materialising a string: Check runs on the
-	// whole message AND every extracted stream, so for the common no-defang case
-	// this avoids a full-buffer copy (up to MaxBody) on the hot path.
-	if !bytes.ContainsAny(data, "[({xX") {
-		return ""
-	}
-	s := string(data)
-	r := strings.NewReplacer(
-		"hxxps", "https", "hXXps", "https", "hxxp", "http", "hXXp", "http",
-		"[.]", ".", "(.)", ".", "{.}", ".",
-		"[dot]", ".", "(dot)", ".", "{dot}", ".", "[DOT]", ".", " dot ", ".",
-		"[:]", ":", "[://]", "://",
-	)
-	out := r.Replace(s)
-	if out == s {
-		return ""
 	}
 	return out
 }
