@@ -242,18 +242,26 @@ fi
 # rule whose slow string phase runs on every TEXT buffer before its magic
 # condition can reject it, matching NOTHING on the mail corpus.
 #
-# FP/noise rules (2026-06-25): rules confirmed present in the compiled bundle
-# that fire on benign mail and add no signal for the mail-attachment vector:
-#   Cloaked_RAR_File                         — mis-fires on benign RAR archives
-#   SUSP_Encoded_Discord_Attachment_Oct21_1  — discord URL noise, not mail-vec
-#   SIGNATURE_BASE_SUSP_Encoded_Discord_Attachment_Oct21_1  — same, sigbase copy
+# Each entry MUST be a rule that upstream ships in its OWN single-rule file, so
+# whole-file removal drops exactly that rule. The three PERF-12 offenders are
+# yaraify rules and yaraify splits one rule per file (yaraify-<name>.yar) — safe.
 #
-# Pruned by RULE NAME (robust to upstream file renames) — any fetched file
-# DECLARING a denied rule is removed; a hit on a multi-rule file is loud (would
-# also drop its siblings) so it can't pass silently. Re-profile after each
-# yaraify refetch (it pulls latest daily): new offenders → add here.
+# DO NOT add FP/noise rules that live in a shared multi-rule BUNDLE here. The
+# pruner removes the whole file, and e.g. yaraforge ships its entire core set
+# (5153 rules) as ONE file `yaraforge-yara-rules-core.yar`; a denied rule that
+# upstream later bundles into that file would nuke ALL 5153. This actually
+# happened: the #223 entry SIGNATURE_BASE_SUSP_Encoded_Discord_Attachment_Oct21_1
+# is bundled inside yaraforge core, so the build dropped the whole forge core set
+# (live fell 11878 -> 6721 rules) until this guard was added. Suppress benign-mail
+# FP/noise rules at RUNTIME via YARAD_RULE_DENYLIST (comma-sep rule names) in the
+# deploy compose instead — that drops match RESULTS without unloading siblings.
+#
+# Pruned by RULE NAME (robust to upstream file renames). The bundle guard below
+# REFUSES to remove any file declaring >1 rule, so a mis-targeted entry can never
+# silently blind a whole ruleset. Re-profile after each yaraify refetch (it pulls
+# latest daily): new offenders → add here (single-rule files only).
 # Full data: memory/eilandert/rspamd-yarad/issues.md "PERF-12".
-SLOW_RULE_DENYLIST="Luckyware_Infection_Detection kryptina_encryptor DLL_DiceLoader_Fin7_Feb2024 Cloaked_RAR_File SUSP_Encoded_Discord_Attachment_Oct21_1 SIGNATURE_BASE_SUSP_Encoded_Discord_Attachment_Oct21_1"
+SLOW_RULE_DENYLIST="Luckyware_Infection_Detection kryptina_encryptor DLL_DiceLoader_Fin7_Feb2024"
 for bad in $SLOW_RULE_DENYLIST; do
     # files that DECLARE this rule (anchored `rule <name>` token, not a substring)
     hits="$(grep -rlE "^[[:space:]]*(private[[:space:]]+|global[[:space:]]+)*rule[[:space:]]+${bad}([[:space:]{:]|\$)" "$OUT" 2>/dev/null || true)"
@@ -264,7 +272,11 @@ for bad in $SLOW_RULE_DENYLIST; do
     for f in $hits; do
         n="$(grep -cE "^[[:space:]]*(private[[:space:]]+|global[[:space:]]+)*rule[[:space:]]" "$f" 2>/dev/null || echo 0)"
         if [ "$n" -gt 1 ]; then
-            echo "fetch-rules: WARNING PERF-12 denylist: '$bad' shares $(basename "$f") with $((n-1)) other rule(s); removing the WHOLE file" >&2
+            # BUNDLE GUARD: refuse to drop a shared multi-rule file — removing it
+            # would unload $((n-1)) innocent siblings (e.g. the 5153-rule forge
+            # core bundle). Suppress this one at runtime via YARAD_RULE_DENYLIST.
+            echo "fetch-rules: WARNING PERF-12 denylist: SKIP '$bad' — shares $(basename "$f") with $((n-1)) other rule(s); not removing the bundle (use runtime YARAD_RULE_DENYLIST)" >&2
+            continue
         fi
         rm -f "$f"
         echo "fetch-rules: PERF-12 denylist: dropped slow rule '$bad' ($(basename "$f"))"

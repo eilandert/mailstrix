@@ -9,30 +9,29 @@ import (
 	"testing"
 )
 
-// fetch-rules.sh prunes two classes of rules from the fetched bundle at build
+// fetch-rules.sh prunes the PERF-12 slow rules from the fetched bundle at build
 // time so they are never compiled or run:
 //
 //   PERF-12 (2026-06-25): three yaraify rules that a libyara profiling run
 //   found to account for 99.3% of all scan cost — unanchored short-atom
 //   regexes on PE/ELF binary rules whose slow string phase runs on every text
-//   buffer and matches nothing on the mail corpus.
+//   buffer and matches nothing on the mail corpus. Each ships in its OWN
+//   single-rule yaraify file, so whole-file removal drops exactly that rule.
 //
-//   FP/noise (2026-06-25): three rules confirmed in the compiled bundle that
-//   fire on benign mail with no signal for the mail-attachment vector.
+// Build-time pruning removes the WHOLE file declaring a denied rule, so it must
+// never list a rule that lives in a shared multi-rule bundle — the BUNDLE GUARD
+// (TestFetchRules_DenylistBundleGuard) refuses such a removal. Benign-mail
+// FP/noise rules are suppressed at RUNTIME via YARAD_RULE_DENYLIST instead.
 //
 // These tests pin the denylist so the wins can't silently regress.
 
 // deniedRules are the rule names fetch-rules.sh must prune. Keep in sync
-// with SLOW_RULE_DENYLIST in docker/fetch-rules.sh.
+// with SLOW_RULE_DENYLIST in docker/fetch-rules.sh. Single-rule files ONLY.
 var deniedRules = []string{
 	// PERF-12: catastrophic-regex rules (99.3% of scan cost on the mail corpus)
 	"Luckyware_Infection_Detection",
 	"kryptina_encryptor",
 	"DLL_DiceLoader_Fin7_Feb2024",
-	// FP/noise: benign-mail false positives, no signal for mail-attachment vector
-	"Cloaked_RAR_File",
-	"SUSP_Encoded_Discord_Attachment_Oct21_1",
-	"SIGNATURE_BASE_SUSP_Encoded_Discord_Attachment_Oct21_1",
 }
 
 func fetchRulesScript(t *testing.T) string {
@@ -120,6 +119,46 @@ func TestFetchRules_DenylistPrunes(t *testing.T) {
 	}
 	if _, err := os.Stat(keeper); err != nil {
 		t.Errorf("PERF-12: keeper file wrongly pruned: %v", err)
+	}
+}
+
+// TestFetchRules_DenylistBundleGuard asserts the guard that prevents a denied
+// rule from unloading a whole shared bundle: a multi-rule file that happens to
+// declare a denied rule name must SURVIVE (its innocent siblings kept). This is
+// the regression that dropped the 5153-rule yaraforge core file from a single
+// shared FP-noise entry. Hermetic: runs the real denylist loop.
+func TestFetchRules_DenylistBundleGuard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh-driven test")
+	}
+	script := fetchRulesScript(t)
+	abs, err := filepath.Abs(script)
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	dir := t.TempDir()
+	// a bundle of many rules, ONE of which carries a denied name — mirrors
+	// yaraforge core bundling SIGNATURE_BASE_* alongside 5153 siblings.
+	bundle := filepath.Join(dir, "yaraforge-yara-rules-core.yar")
+	body := "rule Luckyware_Infection_Detection {\n condition:\n  true\n}\n"
+	for i := 0; i < 5; i++ {
+		body += "rule Innocent_Sibling_" + string(rune('A'+i)) + " {\n condition:\n  true\n}\n"
+	}
+	if err := os.WriteFile(bundle, []byte(body), 0o644); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	src, err := os.ReadFile(abs)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	loop := extractDenylistBlock(t, string(src))
+	prog := "set -eu\nOUT='" + dir + "'\n" + loop
+	out, err := exec.Command("sh", "-c", prog).CombinedOutput()
+	if err != nil {
+		t.Fatalf("denylist block failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(bundle); err != nil {
+		t.Errorf("BUNDLE GUARD: shared multi-rule bundle was wrongly removed (would unload innocent siblings): %v", err)
 	}
 }
 
