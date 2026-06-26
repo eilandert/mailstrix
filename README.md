@@ -551,6 +551,13 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 - [x] `yarad-scan` lean CGO-free Sieve/LDA client ([`sieve/`](sieve/))
 - [x] UserForm hidden-string extraction (carves payload strings from VBA UserForm `o`/`f`/`\x03VBFrame` OLE2 streams; `Maldoc_UserForm_Payload` rule)
 - [x] Document-properties string extraction (OOXML `docProps/`, `customXml/`, `word/settings.xml` docVars; OLE2 `\x05SummaryInformation`; `Maldoc_DocProps_Payload` rule)
+- [x] PE/ELF structural analysis of carved/embedded binaries (`saferwall/pe`, fail-open): section entropy (`PE-SECTION-PACKED` ≥7.2 / `-HIGH-ENTROPY` ≥7.0), `PE-OVERLAY`, `PE-VIRTUAL-SECTION` (FormBook `.ndata`), `PE-DOTNET` (CLR), `PE-ANOMALY`; header-validated `ELF-EXECUTABLE` → `pe_structural.yara`
+- [x] OLE structured metadata (typed MS-OLEPS property-set parse): `OLE-META-TEMPLATE-INJECTION` (remote Template, T1221), `OLE-META-APPNAME-EQUATION` (CVE-2017-11882 EQNEDT32), `OLE-META-REVISION-ZERO`+`-EDITTIME-ZERO` (fresh/VBA-stomp) → `ole_meta.yara`
+- [x] HTML smuggling: container `data:` URI in plain HTML (`HTML_DataURI_Container`), `<svg>`-embedded base64 container payload (`SVG_Embedded_Payload`), OOXML `mhtml:`/`!x-usc:` external-rel scheme (`OOXML_MHTML_Scheme`, CVE-2021-40444)
+- [x] Webpack-bundled Node.js RAT (`Node_RAT_Webpack_Bundle`): child_process+axios+form-data require shims + `execSync` + scheme-hidden `"http://".concat(` C2 upload
+- [x] Legacy-encryption markers (`ENCRYPTION-RC4` from Word FibBase fEncrypted + PPT EncryptedSummary); Shell.Explorer CLSID content rule (`OLE_ShellExplorer_CLSID`, CVE-2026-21509)
+- [x] abuse.ch reputation feeds: URLhaus, MalwareBazaar hash, **ThreatFox** IOC (url/domain), **Feodo** C&C IP blocklist (cached, fail-open)
+- [x] Curated CAPEv2 family rules (Guloader/Formbook/AgentTesla/Obfuscar) as an 8th rule source; build-time `SLOW_RULE_DENYLIST` with a bundle guard (never unloads a shared multi-rule file)
 - [x] Distroless, non-root, read-only rootfs (~89 MB)
 
 ### Planned
@@ -577,18 +584,23 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
 - [x] **Effort tiers** — config + resolution + cache key + profile struct (EFFORT-1), `YARAD_EFFORT=auto` from admission-gate pressure (EFFORT-2), the rspamd plugin setting `X-YARAD-Effort` from the sender's prior score / auth-failure symbols (EFFORT-3, opt-in via `effort_enabled`), and EFFORT-4 wiring each extraction/scan cap (decode depth, XLM/PDF clamps, reputation feeds, scan timeout) to the resolved profile so the dial actually scales work
 - [ ] Batch `/scan` endpoint (collapse N part round-trips)
 
-**Other planned**
+- [x] ThreatFox / Feodo Tracker IOC feeds (domains/IPs)
+- [x] PE-overlay bytes (`PE-OVERLAY` via PE structural analysis)
+- [x] Known-bad-CLSID content rule (`EAB22AC3-30C1-11CF-A7EB-0000C05BAE0B` Shell.Explorer, CVE-2026-21509)
 
-- [ ] ThreatFox / Feodo Tracker IOC feeds (domains/IPs)
-- [ ] File-level fuzzy hashing (TLSH/ssdeep)
-- [ ] CHM / CAB / MSIX extraction
-- [ ] Extractor sandbox hardening (seccomp/rlimits)
-- [ ] PE-overlay bytes; `.url`/`.settingcontent-ms` launcher fields
-- [ ] Known-bad-CLSID content rule — e.g. `EAB22AC3-30C1-11CF-A7EB-0000C05BAE0B` (Shell.Explorer, CVE-2026-21509; only upstream `oletools` addition since the parity baseline). Actionable form = a YARA rule on the GUID bytes in OLE/RTF/OOXML, not a forensic name table; sample-gated
+**Other planned (open roadmap)**
 
-> Disk-image (ISO/UDF/`.dmg`/`.pkg`) and Android `.apk` are intentionally out of
-> scope — not a realistic executable mail vector, and high-attack-surface
-> parsers for low return. iOS has no executable email vector either.
+- [ ] **Password-protected ZIP** — body/filename/wordlist password candidates → `yeka/zip` decrypt → YARA child scan (or a `malunpacker` ICAP sidecar); decision on path 1 vs 2 pending
+- [ ] **TLSH fuzzy hashing** — `glaslos/tlsh` + MalwareBazaar `get_tlsh` family lookup (distance <30 = same family); needs a labelled corpus to FP-tune
+- [ ] **FP auto-tuning** — derive the empirical rule denylist from the rspamd ham corpus instead of the 3 hand-curated entries
+- [ ] CHM / CAB / MSIX extraction; `.url`/`.settingcontent-ms` launcher fields
+- [ ] Shared-formula (`SHRFMLA`) resolution wired into the XLM emulator
+- [ ] Sample-gated legacy XLM/BIFF edge cases (CSV-DDE-XLSB `sbt=1`, per-funcid `ptgFunc` arity, BIFF CONTINUE reassembly)
+
+> Disk-image (ISO/UDF/`.dmg`/`.pkg`), Android `.apk`, full VBA emulation
+> (ViperMonkey), P-code disasm, and extractor seccomp sandboxing are intentionally
+> **out of scope** — not a realistic executable mail vector / over-engineered for
+> an MTA pipe. iOS has no executable email vector either.
 
 ## See also
 
