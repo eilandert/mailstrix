@@ -20,8 +20,12 @@
 #   size       .yac size in bytes (sanity)
 #
 # Requirements: docker (buildx), gh (authenticated), jq, sha256sum.
-# Env overrides: REPO (owner/name), TAG (default rules-current),
-#   YARAFORGE_SET / *_REF build-args are passed through if set.
+# Env overrides: REPO (owner/name), TAG (default rules-current).
+#   Every documented rule-source build-arg is passed through to the Dockerfile
+#   when set in the environment: YARAFORGE_SET, YARAFORGE_URL, SIGBASE_REF,
+#   ANYRUN(/_REF), DIDIER(/_REF), BARTBLAZE(/_REF), INQUEST(/_REF),
+#   CAPE(/_REF), YARAIFY(/_URL) — so the rolling bundle honours the same
+#   pin/toggle knobs as a direct image build.
 set -euo pipefail
 
 REPO="${REPO:-eilandert/rspamd-yarad}"
@@ -38,11 +42,23 @@ for bin in docker gh jq sha256sum; do
 done
 
 # 1) Build the rules-export stage and extract the .yac + the libyara version.
+# Forward every documented rule-source build-arg that is set in the environment
+# so the published rolling bundle honours the same pin/toggle knobs as a direct
+# `docker build --build-arg …` of the image.
 note "building rules (CACHEBUST forces a fresh fetch of the public rulesets)…"
+build_args=""
+for v in YARAFORGE_SET YARAFORGE_URL SIGBASE_REF \
+         ANYRUN ANYRUN_REF DIDIER DIDIER_REF BARTBLAZE BARTBLAZE_REF \
+         INQUEST INQUEST_REF CAPE CAPE_REF YARAIFY YARAIFY_URL; do
+    eval "val=\${$v+set}"
+    [ "${val:-}" = set ] || continue
+    eval "build_args=\"\$build_args --build-arg $v=\${$v}\""
+done
+# shellcheck disable=SC2086  # build_args is a deliberately word-split arg list
 docker buildx build \
     --target rules-export \
     --build-arg "CACHEBUST=$(date +%s)" \
-    ${YARAFORGE_SET:+--build-arg "YARAFORGE_SET=${YARAFORGE_SET}"} \
+    $build_args \
     --output "type=local,dest=${WORK}" \
     -f "${HERE}/docker/Dockerfile" "${HERE}"
 

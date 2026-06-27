@@ -101,11 +101,17 @@ ARG BARTBLAZE_REF=master
 ARG BARTBLAZE=1
 ARG INQUEST_REF=main
 ARG INQUEST=1
+ARG CAPE=1
+ARG CAPE_REF=master
+ARG YARAIFY=1
+ARG YARAIFY_URL=
 RUN YARAFORGE_SET="${YARAFORGE_SET}" YARAFORGE_URL="${YARAFORGE_URL}" SIGBASE_REF="${SIGBASE_REF}" \
         ANYRUN="${ANYRUN}" ANYRUN_REF="${ANYRUN_REF}" \
         DIDIER="${DIDIER}" DIDIER_REF="${DIDIER_REF}" \
         BARTBLAZE="${BARTBLAZE}" BARTBLAZE_REF="${BARTBLAZE_REF}" \
         INQUEST="${INQUEST}" INQUEST_REF="${INQUEST_REF}" \
+        CAPE="${CAPE}" CAPE_REF="${CAPE_REF}" \
+        YARAIFY="${YARAIFY}" YARAIFY_URL="${YARAIFY_URL}" \
         /usr/local/bin/fetch-rules.sh /rules/src \
     && cp /usr/local/share/yarad-local-rules/*.yara /rules/src/ \
     && /usr/local/bin/compile-rules.sh /rules/src /rules/compiled.yac \
