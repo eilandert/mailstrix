@@ -87,7 +87,16 @@ type Scanner struct {
 	bigNilWarned       atomic.Bool   // log the "bigRules nil, falling back" path once
 	bigFileScans       atomic.Uint64 // oversized raw buffers scanned against bigRules
 	bigFileStreamScans atomic.Uint64 // oversized extracted streams scanned against bigRules
-	rawScanErrs        atomic.Uint64 // raw-scan failures that fell through to extraction instead of aborting
+
+	// markerRules is the PERF-18 marker-only bundle: the full compiled ruleset with
+	// every non-marker-tagged rule disabled so the out-of-band Markers channel is
+	// scanned against a tiny subset instead of the full ~12k-rule set. Built in
+	// Reload by recompiling the same source and calling Disable() on every rule
+	// that lacks the "marker" tag. A nil pointer means the bundle could not be
+	// built (logged); scanExtracted then falls back to the full ruleset (no
+	// detection loss). filterMarkerChannel remains as belt-and-suspenders.
+	markerRules atomic.Pointer[yara.Rules]
+	rawScanErrs atomic.Uint64 // raw-scan failures that fell through to extraction instead of aborting
 	// Per-channel scanOne counts (PERF-17): which channel each libyara scan ran on,
 	// so /metrics shows where scan cost goes. Totals INCLUDE the big-file subset
 	// (bigFileScans ⊆ rawChannelScans, bigFileStreamScans ⊆ streamChannelScans).
@@ -550,6 +559,17 @@ func (s *Scanner) Reload() error {
 		}
 	}
 
+	// PERF-18: build the marker-only bundle by recompiling the same source and
+	// disabling all non-marker-tagged rules. A failure here must NOT fail the
+	// reload — the main set is the trust anchor; the marker channel simply falls
+	// back to the full ruleset (same behaviour as before PERF-18) until the next
+	// good load.
+	if mb, mbErr := buildMarkerBundle(s.srcFile, s.srcDir, s.logf); mbErr != nil {
+		s.logf("WARNING: PERF-18 marker bundle build failed, marker channel will use full ruleset: %v", mbErr)
+	} else if mb != nil {
+		s.markerRules.Swap(mb)
+	}
+
 	// Fold a content hash of the loaded ruleset SOURCE (main + big-file set) into the
 	// fingerprint. Identity (namespace+identifier) alone cannot see a condition/meta/
 	// string edit that reuses the same rule name, nor a big-file-set-only change, so
@@ -760,6 +780,53 @@ func compileDir(dir string, logf func(string, ...any)) (*yara.Rules, error) {
 		logf("compiled %d rule files, skipped %d unparseable", added, skipped)
 	}
 	return rules, nil
+}
+
+// buildMarkerBundle compiles the same ruleset as the main set (from srcFile or
+// srcDir) and disables every rule that is NOT tagged "marker", producing a tiny
+// bundle used by PERF-18 to scan the out-of-band Markers channel cheaply. The
+// main *yara.Rules and the bundle are separate C objects (separate compilations),
+// so Disable calls on one do not affect the other.
+//
+// Completeness argument: filterMarkerChannel keeps ONLY marker-tagged hits from
+// the Markers channel. Therefore the only rules that contribute matches on that
+// channel are marker-tagged rules. Disabling all non-marker rules produces a
+// bundle whose scan output is a superset of what filterMarkerChannel would retain
+// from a full-set scan — identical retained output. Kept as belt-and-suspenders.
+//
+// Returns nil, nil when srcFile and srcDir are both empty (no source to
+// recompile). Returns an error on compilation failure; the caller falls back to
+// the full ruleset.
+func buildMarkerBundle(srcFile, srcDir string, logf func(string, ...any)) (*yara.Rules, error) {
+	if srcFile == "" && srcDir == "" {
+		return nil, nil
+	}
+	var (
+		bundle *yara.Rules
+		err    error
+	)
+	if srcFile != "" {
+		bundle, err = yara.LoadRules(srcFile)
+	} else {
+		bundle, err = compileDir(srcDir, logf)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("marker bundle compile: %w", err)
+	}
+	// Disable every rule that is NOT tagged "marker" so the bundle only fires
+	// on marker-tagged rules. Enable/Disable operate on this C object only;
+	// the main rules set is unaffected.
+	allRules := bundle.GetRules()
+	disabled, total := 0, len(allRules)
+	for i := range allRules {
+		if !matchIsMarker(Match{Tags: allRules[i].Tags()}) {
+			allRules[i].Disable()
+			disabled++
+		}
+	}
+	logf("PERF-18: marker bundle built: %d rules disabled, %d marker rules active",
+		disabled, total-disabled)
+	return bundle, nil
 }
 
 // fileCompiles validates one rule file in an isolated compiler so a single bad
@@ -1151,6 +1218,16 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 				s.logf("oversized extracted stream (%dB > %dB threshold): scanning against big-file ruleset instead of full set", len(stream), s.bigFileThreshold)
 			} else if s.bigNilWarned.CompareAndSwap(false, true) {
 				s.logf("WARNING: oversized extracted stream (%dB) but no big-file ruleset loaded; using full set (may time out)", len(stream))
+			}
+		}
+		// PERF-18: for the out-of-band Markers channel, use the marker-only bundle
+		// (full ruleset with non-marker rules disabled) so the scan runs against a
+		// tiny subset instead of the full ~12k-rule set. Falls back to the full
+		// ruleset when the bundle is not available. filterMarkerChannel remains as
+		// belt-and-suspenders regardless of which ruleset is used.
+		if markerChannel {
+			if mb := s.markerRules.Load(); mb != nil {
+				streamRules = mb
 			}
 		}
 		if markerChannel {
