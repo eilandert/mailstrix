@@ -24,6 +24,30 @@ type Candidate struct {
 	Deobf bool   // true when found only in the defanged copy
 }
 
+// hasCandidateURL is the PERF-29 cheap pre-gate run BEFORE the regexp and the
+// defang materialisation. It returns true whenever the buffer could plausibly
+// contain a URL candidate, and false ONLY for buffers that demonstrably cannot.
+//
+// Soundness (strict superset):
+//
+//   - Raw regexp match: urlRe requires `https?://` (case-insensitive). Every
+//     such match contains the literal substring "://" (all-ASCII, no locale
+//     fold needed in the byte comparison). bytes.Contains for "://" is
+//     case-insensitive for this purpose because "://" has no alphabetic bytes.
+//
+//   - Defanged match: defang() only transforms — and can only produce a URL —
+//     when bytes.ContainsAny(data, "[({xX") is true (that gate is already in
+//     defang itself). Any defanged form that could become http(s):// after
+//     replacement must contain at least one of those bytes (e.g. hxxp→has 'x',
+//     hXXp→has 'X', [.]→has '[', (.)→has '(', {.}→has '{').
+//
+// Therefore: a buffer that fails BOTH checks cannot produce any candidate from
+// either the raw pass or the defanged pass. The pre-gate is a strict superset
+// of "has any URL candidate" and can never produce a false negative.
+func hasCandidateURL(data []byte) bool {
+	return bytes.Contains(data, []byte("://")) || bytes.ContainsAny(data, "[({xX")
+}
+
 // Extract extracts URL candidates from data. If maxURLs <= 0 it defaults to 64.
 // Raw candidates (Deobf=false) come first; defanged candidates (Deobf=true)
 // follow using the remaining budget. The total number of candidates never
@@ -36,6 +60,13 @@ type Candidate struct {
 func Extract(data []byte, maxURLs int) []Candidate {
 	if maxURLs <= 0 {
 		maxURLs = 64
+	}
+	// PERF-29: cheap pre-gate before the regexp and defang string materialisation.
+	// On a clean buffer (no "://" and no defang trigger bytes) neither the raw
+	// regexp nor the defang path can produce any candidate — return early without
+	// allocating anything.
+	if !hasCandidateURL(data) {
+		return nil
 	}
 	budget := maxURLs
 
