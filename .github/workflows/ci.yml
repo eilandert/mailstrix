@@ -54,6 +54,7 @@ jobs:
             --load \
             --cache-from type=gha,scope=yarad-build \
             --cache-to type=gha,mode=max,scope=yarad-build \
+            --build-arg LOCAL_ONLY=1 \
             --build-arg CACHEBUST=rules-${{ hashFiles('docker/local-rules/**','docker/fetch-rules.sh','docker/compile-rules.sh','docker/Dockerfile') }} \
             .
 

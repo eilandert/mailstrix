@@ -29,6 +29,20 @@ trap 'rm -rf "$TMP"' EXIT
 
 fail() { echo "fetch-rules: $*" >&2; [ "${YARAD_RULES_OPTIONAL:-0}" = "1" ] || exit 1; }
 
+# LOCAL_ONLY=1 — skip ALL network rule sources (the 8 public feeds) and produce
+# an empty fetched set. The compile step still copies docker/local-rules/ in, so
+# the resulting .yac is a valid, loadable bundle of our own heuristics only.
+# Used by GitHub CI + release builds, where fetching/compiling the full public
+# ruleset is too heavy: the real public bundle is built by the local nightly cron
+# (docker/generate-rules.sh) and published to the `rules-current` release, which
+# yarad pulls at runtime via `--fetch-rules`. The cron does NOT set LOCAL_ONLY.
+if [ "${LOCAL_ONLY:-0}" = "1" ]; then
+    echo "fetch-rules: LOCAL_ONLY=1 — skipping all network sources (public rules come from the rules-current release)"
+    printf '[\n  {"name":"local","repo":"https://github.com/eilandert/rspamd-yarad","license":"MIT","ref":"baked"}\n]\n' > "$OUT/sources.json"
+    echo "fetch-rules: wrote $OUT/sources.json (local-only)"
+    exit 0
+fi
+
 # 1) YARA-Forge bundle — one curated .yar of vetted public rules. Core stays the
 #    default for production stability; extended/full are opt-in build profiles.
 YARAFORGE_SET="${YARAFORGE_SET:-core}"

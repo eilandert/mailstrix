@@ -90,6 +90,11 @@ COPY docker/fetch-rules.sh docker/compile-rules.sh /usr/local/bin/
 COPY docker/local-rules/ /usr/local/share/yarad-local-rules/
 RUN chmod +x /usr/local/bin/fetch-rules.sh /usr/local/bin/compile-rules.sh
 ARG CACHEBUST=unset
+# LOCAL_ONLY=1 skips all network rule fetches; only docker/local-rules/ are
+# compiled into the seed .yac. GitHub CI + release builds set this (the heavy
+# public bundle is built by the local nightly cron and shipped via the
+# rules-current release, pulled at runtime by --fetch-rules).
+ARG LOCAL_ONLY=0
 ARG YARAFORGE_SET=core
 ARG YARAFORGE_URL=
 ARG SIGBASE_REF=master
@@ -105,7 +110,8 @@ ARG CAPE=1
 ARG CAPE_REF=master
 ARG YARAIFY=1
 ARG YARAIFY_URL=
-RUN YARAFORGE_SET="${YARAFORGE_SET}" YARAFORGE_URL="${YARAFORGE_URL}" SIGBASE_REF="${SIGBASE_REF}" \
+RUN LOCAL_ONLY="${LOCAL_ONLY}" \
+        YARAFORGE_SET="${YARAFORGE_SET}" YARAFORGE_URL="${YARAFORGE_URL}" SIGBASE_REF="${SIGBASE_REF}" \
         ANYRUN="${ANYRUN}" ANYRUN_REF="${ANYRUN_REF}" \
         DIDIER="${DIDIER}" DIDIER_REF="${DIDIER_REF}" \
         BARTBLAZE="${BARTBLAZE}" BARTBLAZE_REF="${BARTBLAZE_REF}" \
