@@ -81,3 +81,14 @@ groups:
         annotations:
           summary: "yarad abuse.ch feed refresh failing"
           description: "An enabled abuse.ch feed (URLhaus/MalwareBazaar/…) has failed to refresh for 2h; lookups use stale data (fail-open)."
+
+      # --- ICAP (only meaningful when YARAD_ICAP_ADDR is set; counters stay 0 otherwise) ---
+      - alert: YaradICAPHighInfectionRate
+        expr: |
+          sum(rate(yarad_icap_infected_total[15m]))
+            / clamp_min(sum(rate(yarad_icap_requests_total[15m])), 0.001) > 0.20
+        for: 15m
+        labels: { severity: info }
+        annotations:
+          summary: "yarad ICAP infection rate >20%"
+          description: "Over 20% of ICAP REQMOD/RESPMOD requests matched a rule (403 sent) for 15m. Expected during an outbreak; otherwise check for a noisy/false-positive rule."

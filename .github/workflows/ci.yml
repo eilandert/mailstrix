@@ -563,17 +563,17 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
             apk add --no-cache luarocks5.4 lua5.4-dev gcc musl-dev >/dev/null 2>&1
             luarocks-5.4 install luacheck >/dev/null 2>&1
-            luacheck rspamd/
+            luacheck contrib/rspamd/
           '
 
       - name: lua plugin unit tests (dedup + effort + explainability contracts)
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
             apk add --no-cache lua5.4 >/dev/null 2>&1
-            lua5.4 rspamd/test/yara_dedup_spec.lua
-            lua5.4 rspamd/test/yara_effort_spec.lua
-            lua5.4 rspamd/test/yara_explain_spec.lua
-            lua5.4 rspamd/test/yara_feed_routing_spec.lua
+            lua5.4 contrib/rspamd/test/yara_dedup_spec.lua
+            lua5.4 contrib/rspamd/test/yara_effort_spec.lua
+            lua5.4 contrib/rspamd/test/yara_explain_spec.lua
+            lua5.4 contrib/rspamd/test/yara_feed_routing_spec.lua
           '
 
       - name: spamassassin plugin (perl -c + http/shellout unit tests)
@@ -582,10 +582,10 @@ jobs:
             apt-get update >/dev/null 2>&1
             apt-get install -y --no-install-recommends spamassassin libhttp-tiny-perl perl >/dev/null 2>&1
             # Syntax-check the plugin against the installed Mail::SpamAssassin.
-            perl -I spamassassin -c spamassassin/Yarad.pm
+            perl -I contrib/spamassassin -c contrib/spamassassin/Yarad.pm
             # Hermetic unit tests: http mode via a mocked HTTP::Tiny, shellout mode
             # via fake yarad-scan scripts. No running yarad needed.
-            prove -v -I spamassassin spamassassin/t/yarad.t
+            prove -v -I contrib/spamassassin contrib/spamassassin/t/yarad.t
           '
 
       - name: semgrep (non-blocking until tuned)

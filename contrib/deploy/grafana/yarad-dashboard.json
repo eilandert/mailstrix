@@ -207,6 +207,31 @@
         { "expr": "sum(rate(yarad_urlhaus_refresh_failures_total{instance=~\"$instance\"}[1h]))", "legendFormat": "urlhaus" },
         { "expr": "sum(rate(yarad_malwarebazaar_refresh_failures_total{instance=~\"$instance\"}[1h]))", "legendFormat": "mbazaar" }
       ]
+    },
+    { "type": "row", "title": "ICAP (optional listener)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 } },
+    {
+      "type": "timeseries",
+      "title": "ICAP requests/s by outcome",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 39 },
+      "description": "Only nonzero when YARAD_ICAP_ADDR is set. REQMOD/RESPMOD vs OPTIONS, and the infected subset (403 replacement sent).",
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        { "expr": "sum(rate(yarad_icap_requests_total{instance=~\"$instance\"}[5m]))", "legendFormat": "requests" },
+        { "expr": "sum(rate(yarad_icap_options_total{instance=~\"$instance\"}[5m]))", "legendFormat": "options" },
+        { "expr": "sum(rate(yarad_icap_infected_total{instance=~\"$instance\"}[5m]))", "legendFormat": "infected" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "ICAP infection ratio",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 39 },
+      "description": "Share of ICAP REQMOD/RESPMOD requests that matched >=1 rule (403 replacement sent). Excludes OPTIONS.",
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [
+        { "expr": "sum(rate(yarad_icap_infected_total{instance=~\"$instance\"}[5m])) / clamp_min(sum(rate(yarad_icap_requests_total{instance=~\"$instance\"}[5m])), 0.001)", "legendFormat": "infected ratio" }
+      ]
     }
   ]
 }

@@ -20,14 +20,14 @@ compiles those rules — libyara modules and all — and runs them over your mai
 
 **Four ways to plug it into a mail server, all shipped in this repo:**
 
-- **rspamd** — an async `yara.lua` plugin ([`rspamd/`](rspamd/)) POSTs each
+- **rspamd** — an async `yara.lua` plugin ([`contrib/rspamd/`](contrib/rspamd/)) POSTs each
   message/part to yarad at SMTP time and turns the hits into a spam-score symbol.
-- **SpamAssassin** — the [`Yarad.pm`](spamassassin/) plugin scans each message
+- **SpamAssassin** — the [`Yarad.pm`](contrib/spamassassin/) plugin scans each message
   through the same central service and turns a YARA match into a spam-score hit
-  ([`spamassassin/`](spamassassin/)).
+  ([`contrib/spamassassin/`](contrib/spamassassin/)).
 - **Dovecot / Sieve** — the lean [`yarad-scan`](#thin-client-for-dovecot--sieve-yarad-scan)
   client scans at *delivery* and a Sieve rule quarantines a match
-  ([`sieve/`](sieve/)).
+  ([`contrib/sieve/`](contrib/sieve/)).
 - **ICAP** — set `YARAD_ICAP_ADDR` and yarad also speaks ICAP (RFC 3507) so an
   ICAP-aware proxy or content-filter (Squid, c-icap) scans REQMOD/RESPMOD bodies
   through the same engine ([ICAP mode](#icap-mode-optional)).
@@ -49,7 +49,7 @@ compiles those rules — libyara modules and all — and runs them over your mai
 > Which is right depends on your mailflow and goals: scan early at SMTP to *reject*
 > with rspamd's score, or scan late at delivery to *quarantine* a smaller, cleaner
 > stream. yarad supports both; see the [thin client](#thin-client-for-dovecot--sieve-yarad-scan)
-> and [`sieve/`](sieve/) for the delivery-time path.
+> and [`contrib/sieve/`](contrib/sieve/) for the delivery-time path.
 
 It runs **out of process**, never inside the MTA worker, because libyara is a C
 library (CGO): in an rspamd worker it would block the event loop and drag a heavy
@@ -63,8 +63,8 @@ be scaled, restarted, or reload its rules on its own. Same shape as the
 
 - **Scans mail with YARA** — `POST /scan` raw message bytes (or one MIME part),
   get back the matched rules as JSON; the rspamd `yara.lua` plugin
-  ([`rspamd/`](rspamd/)) wires the hits into the spam score, or the `yarad-scan`
-  client scans at delivery from Dovecot/Sieve ([`sieve/`](sieve/)).
+  ([`contrib/rspamd/`](contrib/rspamd/)) wires the hits into the spam score, or the `yarad-scan`
+  client scans at delivery from Dovecot/Sieve ([`contrib/sieve/`](contrib/sieve/)).
 - **Ships ~10k public rules baked in** — YARA-Forge, signature-base, ANY.RUN,
   Didier Stevens, bartblaze, InQuest, CAPEv2, YARAify; precompiled `.yac`, daily refresh.
 - **Decompresses Office macros before matching** — MS-OVBA VBA out of
@@ -121,7 +121,7 @@ be scaled, restarted, or reload its rules on its own. Same shape as the
   version-matched, sha256-verified compiled bundle into a cache; SIGHUP reloads.
 - **CLI tools** — `yarad scan` (local triage), `yarad extract` (dump what a
   container carves), `yarad check-rules`, `yarad info`; and `yarad-scan`, a tiny
-  CGO-free client for a Dovecot/Sieve box ([`sieve/`](sieve/)).
+  CGO-free client for a Dovecot/Sieve box ([`contrib/sieve/`](contrib/sieve/)).
 - **Observable** — `/health`, `/ready`, `/version`, Prometheus `/metrics`
   (scans, matches, cache, per-extractor counters, rule staleness).
 
@@ -286,7 +286,7 @@ the obvious spam at SMTP, then scan the smaller, cleaner stream with YARA at
 delivery and quarantine a hit — off the connection's critical path.
 
 A ready-to-use Dovecot Sieve example (the `execute` rule, an install wrapper, the
-dovecot config, and a setup/test walkthrough) lives in **[`sieve/`](sieve/)**.
+dovecot config, and a setup/test walkthrough) lives in **[`contrib/sieve/`](contrib/sieve/)**.
 Because the client fails open, a delivery is never lost if the backend is down.
 
 ## Configuration
@@ -595,14 +595,14 @@ When `YARAD_ICAP_ADDR` is set, three additional counters appear in `/metrics`:
 
 `/metrics` is Prometheus exposition format (counters + gauges, no auth unless
 `YARAD_METRICS_AUTH=1`). Ready-to-import artifacts live in
-[`deploy/`](deploy/):
+[`contrib/deploy/`](contrib/deploy/):
 
-- **[`deploy/grafana/yarad-dashboard.json`](deploy/grafana/yarad-dashboard.json)**
+- **[`contrib/deploy/grafana/yarad-dashboard.json`](contrib/deploy/grafana/yarad-dashboard.json)**
   — a dashboard with the request path (scans/matches/errors/busy), cache hit
   ratio, libyara scan channels (raw/stream/marker/bigfile), extraction by
   carrier, rule reloads, ruleset age/staleness, abuse.ch feed lookups/hits, and
   the auto effort level. Import it and pick your Prometheus datasource.
-- **[`deploy/prometheus/yarad-alerts.yml`](deploy/prometheus/yarad-alerts.yml)**
+- **[`contrib/deploy/prometheus/yarad-alerts.yml`](contrib/deploy/prometheus/yarad-alerts.yml)**
   — alert rules: daemon down, zero rules loaded, stale ruleset, reload failing,
   high scan-error / busy rate, feed-refresh failures. Reference it from
   `rule_files:` in `prometheus.yml`.
@@ -618,9 +618,9 @@ scrape_configs:
 
 ## Wiring it into rspamd
 
-The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
+The [`contrib/rspamd/`](contrib/rspamd/) directory has everything the rspamd side needs:
 
-- [`plugins/yara.lua`](rspamd/plugins/yara.lua) — the async plugin that POSTs to
+- [`plugins/yara.lua`](contrib/rspamd/plugins/yara.lua) — the async plugin that POSTs to
   yarad and classifies each matched rule into a scoring tier:
 
   | symbol | tier | default weight |
@@ -637,9 +637,9 @@ The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:
 
   Tiers stack, capped by the group `max_score`. The classifier lives in the
   plugin, so retuning is just an rspamd reload (no yarad rebuild).
-- [`rspamd.conf.local`](rspamd/rspamd.conf.local) — how to load a custom lua
+- [`rspamd.conf.local`](contrib/rspamd/rspamd.conf.local) — how to load a custom lua
   module (inline `yara { }` block + explicit `lua =` include).
-- [`local.d/groups.conf`](rspamd/local.d/groups.conf) — the per-tier weights.
+- [`local.d/groups.conf`](contrib/rspamd/local.d/groups.conf) — the per-tier weights.
   Set any to `0.0` for a cautious log-only first run.
 
 ## Build & test
@@ -707,7 +707,7 @@ artifact (feed it to `grype`, `osv-scanner`, or any SPDX consumer).
 - [x] `YARAD_RULE_DENYLIST` (drop) + `YARAD_RULE_ALLOWLIST` (log-only)
 - [x] Tiered scoring (`YARA_MALWARE`/`_EXPLOIT`/`_PHISHING`/`YARA`/`_SUSPICIOUS` + `URLHAUS_MALWARE_URL`)
 - [x] SIGHUP rule reload (atomic swap, keeps old rules on a bad edit); `fetch-rules` out-of-image updates
-- [x] `yarad-scan` lean CGO-free Sieve/LDA client ([`sieve/`](sieve/))
+- [x] `yarad-scan` lean CGO-free Sieve/LDA client ([`contrib/sieve/`](contrib/sieve/))
 - [x] UserForm hidden-string extraction (carves payload strings from VBA UserForm `o`/`f`/`\x03VBFrame` OLE2 streams; `Maldoc_UserForm_Payload` rule)
 - [x] Document-properties string extraction (OOXML `docProps/`, `customXml/`, `word/settings.xml` docVars; OLE2 `\x05SummaryInformation`; `Maldoc_DocProps_Payload` rule)
 - [x] PE/ELF structural analysis of carved/embedded binaries (`saferwall/pe`, fail-open): section entropy (`PE-SECTION-PACKED` ≥7.2 / `-HIGH-ENTROPY` ≥7.0), `PE-OVERLAY`, `PE-VIRTUAL-SECTION` (FormBook `.ndata`), `PE-DOTNET` (CLR), `PE-ANOMALY`; header-validated `ELF-EXECUTABLE` → `pe_structural.yara`
@@ -766,8 +766,8 @@ artifact (feed it to `grype`, `osv-scanner`, or any SPDX consumer).
 
 - **[gozer](https://github.com/eilandert/gozer)** — the DCC/Razor/Pyzor sibling backend this mirrors.
 - **[rspamd-olefy](https://github.com/eilandert/rspamd-olefy)** — the parallel oletools deep-scan scorer.
-- **[SpamAssassin plugin](spamassassin/)** — scan each message through yarad and score a YARA match.
-- **[Dovecot/Sieve example](sieve/)** — quarantine a match with the `yarad-scan` client.
+- **[SpamAssassin plugin](contrib/spamassassin/)** — scan each message through yarad and score a YARA match.
+- **[Dovecot/Sieve example](contrib/sieve/)** — quarantine a match with the `yarad-scan` client.
 - **Article:** [YARA malware scanning in rspamd](https://deb.myguard.nl/articles/yara-malware-scanning-rspamd-yarad/) — the why and how, on deb.myguard.nl.
 - **Docker Hub:** [`eilandert/rspamd-yarad`](https://hub.docker.com/r/eilandert/rspamd-yarad).
 
