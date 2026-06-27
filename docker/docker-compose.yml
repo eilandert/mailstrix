@@ -27,7 +27,7 @@ services:
       YARAD_VERBOSE: "0"               # 1 for per-request access lines
 
       # --- Cache (built for high volume; mail is heavily duplicated) --------
-      YARAD_CACHE_TTL: "600"           # seconds; 0 disables
+      YARAD_CACHE_TTL: "3600"          # seconds; 0 disables
       # YARAD_CACHE_SIZE: "65536"      # in-memory LRU entries
       # Shared cache across replicas (else in-process LRU only):
       # YARAD_REDIS_URL: "redis://valkey:6379/6"

@@ -88,7 +88,7 @@ type Config struct {
 	// one body to N recipients, MTA retries), so caching SHA256(body) -> matches
 	// turns most scans into a microsecond lookup. The in-process LRU is always
 	// on; RedisURL adds a shared layer across replicas (empty => LRU only).
-	CacheTTL    time.Duration // YARAD_CACHE_TTL    (default 600s; 0 disables caching)
+	CacheTTL    time.Duration // YARAD_CACHE_TTL    (default 3600s; 0 disables caching)
 	CacheSize   int           // YARAD_CACHE_SIZE   (default 65536 in-memory entries)
 	RedisURL    string        // YARAD_REDIS_URL    (empty -> in-process LRU only)
 	RedisPrefix string        // YARAD_REDIS_PREFIX (default yara:scan:)
@@ -194,7 +194,7 @@ func LoadConfig() *Config {
 		ScanTimeout:      envDur("YARAD_SCAN_TIMEOUT", 8),
 		BigFileThreshold: envInt64("YARAD_BIGFILE_THRESHOLD", 6*1024*1024),
 		BigFileRules:     strings.TrimSpace(os.Getenv("YARAD_BIGFILE_RULES")),
-		CacheTTL:         envDur("YARAD_CACHE_TTL", 600),
+		CacheTTL:         envDur("YARAD_CACHE_TTL", 3600),
 		CacheSize:        envInt("YARAD_CACHE_SIZE", 65536),
 		RedisURL:         strings.TrimSpace(os.Getenv("YARAD_REDIS_URL")),
 		RedisPrefix:      envStr("YARAD_REDIS_PREFIX", "yara:scan:"),
