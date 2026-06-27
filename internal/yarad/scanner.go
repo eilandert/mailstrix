@@ -1509,8 +1509,26 @@ func (s *Scanner) Scan(buf []byte, digest [32]byte, meta ScanMeta) ([]Match, err
 				}
 			}
 		}
+		// PERF-33: skip streams whose bytes are byte-identical to buf or to an
+		// already-processed stream. Identical bytes → identical urlcand.Extract
+		// candidates → any URL they'd yield is already in seenURL/seenTF/seenFD
+		// from the first occurrence, so CheckCandidates output for the dup is 100%
+		// deduped away. Removing the dup call removes ZERO appends to out and is
+		// therefore byte-identical to the output produced today. Uses the same
+		// streamDedupKey (xxhash 128-bit) as the YARA-scan dedup loop above.
+		// buf is processed first (unchanged); unique streams follow in first-
+		// occurrence order (mirrors the original walk, minus the wasteful dups).
+		// Seeding with streamDedupKey(buf) here rather than meta.RawKey because
+		// meta.RawKey is zero on the CLI path; the single hash cost is negligible.
+		fedSeen := make(map[[16]byte]struct{}, len(res.Streams)+1)
+		fedSeen[streamDedupKey(buf)] = struct{}{}
 		addFeedHits(buf)
 		for _, stream := range res.Streams {
+			k := streamDedupKey(stream)
+			if _, dup := fedSeen[k]; dup {
+				continue
+			}
+			fedSeen[k] = struct{}{}
 			addFeedHits(stream)
 		}
 	}
