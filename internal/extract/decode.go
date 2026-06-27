@@ -683,8 +683,14 @@ func fromEncoded(buf []byte, res *Result, opts *Options) {
 	// per-blob/cumulative/stream caps as every other decoded blob. The snapshot is
 	// taken before this loop, so the appended streams are not themselves re-scanned
 	// for UTF-16 (no recursion).
+	// Snapshot the source count before the loop so that UTF-8 transcodes appended
+	// to sources below are not themselves re-scanned for UTF-16 (no recursion).
+	// Iterate by index instead of copying the slice — avoids a full slice copy
+	// whose only purpose was preventing iteration over newly appended elements.
+	u16OrigLen := len(sources)
 	var u16Blobs, u16Cum int
-	for _, src := range append([][]byte(nil), sources...) {
+	for i := 0; i < u16OrigLen; i++ {
+		src := sources[i]
 		if expired(deadline) || len(res.Streams) >= maxStreams {
 			break
 		}
@@ -774,12 +780,12 @@ func fromEncoded(buf []byte, res *Result, opts *Options) {
 		cum      int
 		iters    int
 		maxLayer int
-		seen     map[uint64]struct{}
+		// seen is allocated lazily on the first accepted blob for this source.
+		// A nil map is safe to query (returns zero, false); it is initialised on
+		// first write inside emit so sources that decode nothing never allocate it.
+		seen map[uint64]struct{}
 	}
 	states := make([]srcState, len(sources))
-	for i := range states {
-		states[i].seen = make(map[uint64]struct{})
-	}
 
 	// Seed: all sources at depth 0, in source order.
 	queue := make([]bfsItem, 0, len(sources))
@@ -830,6 +836,8 @@ func fromEncoded(buf []byte, res *Result, opts *Options) {
 				b = b[:maxBytesPerDecodedBlob]
 			}
 			// MSD-2: per-source-tree dedup (preserves old per-tree semantics).
+			// st.seen is nil until the first accepted blob — a nil map read is
+			// safe (returns zero, false); allocate lazily on first write below.
 			h := fnv64(b)
 			if _, dup := st.seen[h]; dup {
 				return true
@@ -839,6 +847,9 @@ func fromEncoded(buf []byte, res *Result, opts *Options) {
 			}
 			res.Streams = append(res.Streams, b)
 			curChildren = append(curChildren, b)
+			if st.seen == nil {
+				st.seen = make(map[uint64]struct{})
+			}
 			st.seen[h] = struct{}{}
 			st.blobs++
 			st.cum += len(b)
