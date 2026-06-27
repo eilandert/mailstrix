@@ -656,6 +656,27 @@ docker build --target final -f docker/Dockerfile -t eilandert/rspamd-yarad \
     --build-arg CACHEBUST=$(date +%s) .
 ```
 
+## Verifying releases
+
+Every release asset is checksummed, **keyless-signed with cosign** (Sigstore),
+and shipped with an **SPDX SBOM**. To verify a downloaded binary:
+
+```sh
+# 1. checksum
+sha256sum -c SHA256SUMS --ignore-missing
+
+# 2. cosign signature (keyless — identity is the release workflow's OIDC cert)
+cosign verify-blob \
+  --certificate yarad-linux-amd64.pem \
+  --signature   yarad-linux-amd64.sig \
+  --certificate-identity-regexp '^https://github.com/eilandert/rspamd-yarad/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  yarad-linux-amd64
+```
+
+The matching `*.sbom.spdx.json` lists the Go module graph baked into each
+artifact (feed it to `grype`, `osv-scanner`, or any SPDX consumer).
+
 ## Status & roadmap
 
 ### Already in

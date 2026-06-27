@@ -114,7 +114,8 @@ jobs:
     needs: [binaries, debs]
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # create GitHub release + upload assets
+      contents: write   # create GitHub release + upload assets
+      id-token: write   # cosign keyless (Sigstore/Fulcio OIDC) signing
     steps:
       - uses: actions/checkout@v5  # zizmor: ignore[artipacked] (gh release needs repo context)
 
@@ -137,6 +138,38 @@ jobs:
           ( cd out && sha256sum yarad-linux-* yarad-scan-linux-* ./*.deb > SHA256SUMS )
           ls -l out
 
+      - name: install cosign + syft
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159  # v3.9.2
+      - name: install syft
+        uses: anchore/sbom-action/download-syft@7b36ad622f042cab6f59a75c2ac24ccb256e9b45  # v0.20.4
+
+      # SPDX SBOM per binary (source = the built ELF), so consumers can audit the
+      # Go module graph baked into each release artifact.
+      - name: generate SBOMs
+        run: |
+          set -euo pipefail
+          for f in out/yarad-linux-amd64 out/yarad-linux-arm64 out/yarad-scan-linux-amd64 out/yarad-scan-linux-arm64 out/*.deb; do
+            syft scan "file:${f}" -o spdx-json="${f}.sbom.spdx.json"
+          done
+          ls -l out
+
+      # Keyless-sign every artifact (binaries + checksums + SBOMs). Signatures
+      # (.sig) + certs (.pem) are attached too; verify with cosign verify-blob
+      # against the issuer/identity (see README).
+      - name: sign artifacts (cosign keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          for f in out/yarad-linux-* out/yarad-scan-linux-* out/*.deb out/SHA256SUMS; do
+            case "$f" in *.sig|*.pem) continue;; esac
+            cosign sign-blob --yes \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.pem" \
+              "$f"
+          done
+          ls -l out
+
       - name: create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -144,23 +177,16 @@ jobs:
           set -euo pipefail
           # Idempotent: if a release for this tag already exists (e.g. created
           # manually before the tag push), upload/overwrite assets onto it
-          # instead of failing the whole run on a duplicate.
+          # instead of failing the whole run on a duplicate. Glob picks up the
+          # binaries, SHA256SUMS, .sbom.spdx.json, .sig and .pem files together.
+          # Globs catch the binaries plus their .sig/.pem/.sbom.spdx.json and
+          # the SHA256SUMS + its signature/cert.
+          assets=( out/yarad-linux-* out/yarad-scan-linux-* out/*.deb* out/SHA256SUMS* )
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" --clobber \
-              out/yarad-linux-amd64 \
-              out/yarad-linux-arm64 \
-              out/yarad-scan-linux-amd64 \
-              out/yarad-scan-linux-arm64 \
-              out/*.deb \
-              out/SHA256SUMS
+            gh release upload "${GITHUB_REF_NAME}" --clobber "${assets[@]}"
           else
             gh release create "${GITHUB_REF_NAME}" \
               --title "${GITHUB_REF_NAME}" \
               --generate-notes \
-              out/yarad-linux-amd64 \
-              out/yarad-linux-arm64 \
-              out/yarad-scan-linux-amd64 \
-              out/yarad-scan-linux-arm64 \
-              out/*.deb \
-              out/SHA256SUMS
+              "${assets[@]}"
           fi
