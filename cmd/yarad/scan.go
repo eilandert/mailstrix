@@ -49,13 +49,11 @@ func cmdScan(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	// The -max-body flag is parsed AFTER LoadConfig's sanitize, so a non-positive
-	// value here would disable the per-input read cap (io.LimitReader is skipped
-	// when maxBody <= 0) and let a device/huge file/unbounded stdin exhaust memory.
-	// Restore the same 8 MiB floor the server config uses.
-	if cfg.MaxBody <= 0 {
-		cfg.MaxBody = 8 * 1024 * 1024
-	}
+	// Re-apply all sanitize clamps after flag overlay so a non-positive flag
+	// value (e.g. -scan-timeout=0, -max-body=0) cannot disable safety guards
+	// that LoadConfig set on startup. Finalize is idempotent: clamping an
+	// already-valid value is a no-op.
+	cfg.Finalize()
 
 	logf := func(format string, a ...any) { log.Printf("[yarad] "+format, a...) }
 

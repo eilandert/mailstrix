@@ -166,11 +166,12 @@ sub fake_scan {
         my $msg = $sa->parse(\$raw, 1);
         my $pms = fresh_pms();
         $pms->{msg} = $msg;
-        my @bufs = $self->_message_part_buffers($pms);
-        ok(scalar(@bufs) >= 2, 'part bufs: at least the two leaf parts');
-        ok((grep { /hello world/ } @bufs), 'part bufs: text part body present');
-        ok((grep { /MALWARE_BYTES/ } @bufs), 'part bufs: base64 attachment decoded to real bytes');
-        ok(!(grep { /TUFMV0FSRV9CWVRFUw/ } @bufs), 'part bufs: wrapped base64 text not present (was decoded)');
+        my @parts = $self->_message_part_buffers($pms);
+        ok(scalar(@parts) >= 2, 'part bufs: at least the two leaf parts');
+        my @bodies = map { $_->[0] } @parts;
+        ok((grep { /hello world/ } @bodies), 'part bufs: text part body present');
+        ok((grep { /MALWARE_BYTES/ } @bodies), 'part bufs: base64 attachment decoded to real bytes');
+        ok(!(grep { /TUFMV0FSRV9CWVRFUw/ } @bodies), 'part bufs: wrapped base64 text not present (was decoded)');
         $msg->finish() if $msg->can('finish');
         $sa->finish() if $sa->can('finish');
     }
@@ -225,7 +226,7 @@ sub fake_scan {
 
     # Two leaf part buffers, regardless of message structure.
     local *Mail::SpamAssassin::Plugin::Yarad::_message_part_buffers = sub {
-        return ('part1', 'part2');
+        return (['part1', undef], ['part2', undef]);
     };
 
     # First call errors (transport failure -> _scan_http returns undef),
@@ -265,7 +266,7 @@ sub fake_scan {
     no warnings 'redefine';
 
     local *Mail::SpamAssassin::Plugin::Yarad::_message_part_buffers = sub {
-        return ('part1', 'part2');
+        return (['part1', undef], ['part2', undef]);
     };
     my $call_count = 0;
     local *HTTP::Tiny::post = sub {
@@ -290,6 +291,114 @@ sub fake_scan {
     $self->parsed_metadata({ permsgstatus => $pms });
     is($pms->{yarad_error}, 0,
         'part mode fail-open: a part error does not fire yarad_error (one part completed)');
+}
+
+# ---- part mode filename: http mode forwards X-YARAD-Filename (base64) ----
+# Drive parsed_metadata in part mode with a mocked _message_part_buffers that
+# returns one part WITH a filename. Assert the header is present and base64-correct.
+{
+    require HTTP::Tiny;
+    require MIME::Base64;
+    no warnings 'redefine';
+
+    local *Mail::SpamAssassin::Plugin::Yarad::_message_part_buffers = sub {
+        return (['fake attachment bytes', 'invoice.exe']);
+    };
+
+    my $captured_headers;
+    local *HTTP::Tiny::post = sub {
+        my ($h, $url, $args) = @_;
+        $captured_headers = $args->{headers};
+        return { success => 1, status => 200, content => '{"matches":[]}' };
+    };
+
+    my $conf = {
+        yarad_url        => 'http://x:8079',
+        yarad_timeout    => 5,
+        yarad_mode       => 'http',
+        yarad_max_size   => 0,
+        yarad_part_mode  => 1,
+        yarad_fail_open  => 1,
+        yarad_high_score => 75,
+    };
+    my $pms = fresh_pms();
+    $pms->{conf} = $conf;
+    $pms->{msg}  = bless {}, 'main::FakeMsg';
+
+    $self->parsed_metadata({ permsgstatus => $pms });
+    ok(defined $captured_headers, 'http filename: POST was made');
+    ok(defined $captured_headers->{'X-YARAD-Filename'},
+        'http filename: X-YARAD-Filename header present');
+    my $decoded = MIME::Base64::decode_base64($captured_headers->{'X-YARAD-Filename'} // '');
+    is($decoded, 'invoice.exe', 'http filename: header decodes to the part filename');
+}
+
+# ---- part mode filename: http mode omits X-YARAD-Filename when no name ----
+{
+    require HTTP::Tiny;
+    no warnings 'redefine';
+
+    local *Mail::SpamAssassin::Plugin::Yarad::_message_part_buffers = sub {
+        return (['body bytes', undef]);   # no filename
+    };
+
+    my $captured_headers;
+    local *HTTP::Tiny::post = sub {
+        my ($h, $url, $args) = @_;
+        $captured_headers = $args->{headers};
+        return { success => 1, status => 200, content => '{"matches":[]}' };
+    };
+
+    my $conf = {
+        yarad_url        => 'http://x:8079',
+        yarad_timeout    => 5,
+        yarad_mode       => 'http',
+        yarad_max_size   => 0,
+        yarad_part_mode  => 1,
+        yarad_fail_open  => 1,
+        yarad_high_score => 75,
+    };
+    my $pms = fresh_pms();
+    $pms->{conf} = $conf;
+    $pms->{msg}  = bless {}, 'main::FakeMsg';
+
+    $self->parsed_metadata({ permsgstatus => $pms });
+    ok(!defined $captured_headers->{'X-YARAD-Filename'},
+        'http filename: X-YARAD-Filename absent when part has no name');
+}
+
+# ---- part mode filename: shellout mode passes -filename arg ----
+# The fake yarad-scan prints its own argv so we can assert -filename is present.
+{
+    my $argv_log = "$dir/argv.txt";
+    my $bin = fake_scan('fname_check',
+        "#!/bin/sh\ncat >/dev/null\necho \"\$@\" > $argv_log\nexit 0\n");
+    my $pms  = fresh_pms();
+    my $conf = { yarad_scan_bin => $bin, yarad_url => 'http://x', yarad_timeout => 5 };
+    my $body = 'attachment bytes';
+    my $ok = $self->_scan_shellout($pms, $conf, \$body, 'report.pdf');
+    is($ok, 1, 'shellout filename: scan completed');
+    open(my $fh, '<', $argv_log) or die "cannot read argv log: $!";
+    my $argv = do { local $/; <$fh> };
+    close($fh);
+    like($argv, qr/-filename/, 'shellout filename: -filename flag in argv');
+    like($argv, qr/report\.pdf/, 'shellout filename: filename value in argv');
+}
+
+# ---- part mode filename: shellout mode omits -filename when no name ----
+{
+    my $argv_log2 = "$dir/argv2.txt";
+    my $bin = fake_scan('no_fname',
+        "#!/bin/sh\ncat >/dev/null\necho \"\$@\" > $argv_log2\nexit 0\n");
+    my $pms  = fresh_pms();
+    my $conf = { yarad_scan_bin => $bin, yarad_url => 'http://x', yarad_timeout => 5 };
+    my $body = 'body';
+    my $ok = $self->_scan_shellout($pms, $conf, \$body, undef);
+    is($ok, 1, 'shellout no-filename: scan completed');
+    open(my $fh, '<', $argv_log2) or die "cannot read argv log2: $!";
+    my $argv = do { local $/; <$fh> };
+    close($fh);
+    unlike($argv, qr/-filename/, 'shellout no-filename: -filename flag absent when no name');
 }
 
 done_testing();

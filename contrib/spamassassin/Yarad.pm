@@ -38,6 +38,7 @@ use strict;
 use warnings;
 use Mail::SpamAssassin::Plugin;
 use Mail::SpamAssassin::Logger;
+use MIME::Base64 ();
 use POSIX ();
 
 our @ISA = qw(Mail::SpamAssassin::Plugin);
@@ -155,20 +156,23 @@ sub parsed_metadata {
     my $mode = lc($conf->{yarad_mode} || 'http');
     my $helper = $mode eq 'shellout' ? '_scan_shellout' : '_scan_http';
 
-    # Build the list of buffers to scan. Whole-message mode (default) scans the
-    # pristine message once; part mode scans each decoded leaf MIME part. Part
-    # mode falls back to the pristine message when no leaf part yields a body.
-    my @bufs;
+    # Build the list of (buffer, filename) pairs to scan. Whole-message mode
+    # (default) scans the pristine message once with no filename. Part mode scans
+    # each decoded leaf MIME part; the attachment filename (if any) travels with
+    # the buffer so the backend can set YARA filename/extension external variables.
+    # Part mode falls back to the pristine message when no leaf part yields a body.
+    my @parts;  # array of [ $body_scalar, $filename_or_undef ]
     if ($conf->{yarad_part_mode}) {
-        @bufs = $self->_message_part_buffers($pms);
-        if (!@bufs) {
+        my @raw = $self->_message_part_buffers($pms);
+        if (!@raw) {
             dbg("yarad: part mode found no part bodies, falling back to whole message");
-            @bufs = ($pms->{msg}->get_pristine());
+            @parts = ([ $pms->{msg}->get_pristine(), undef ]);
         } else {
-            dbg("yarad: part mode scanning %d part(s)", scalar @bufs);
+            dbg("yarad: part mode scanning %d part(s)", scalar @raw);
+            @parts = @raw;  # each element is already [ $body, $filename ]
         }
     } else {
-        @bufs = ($pms->{msg}->get_pristine());
+        @parts = ([ $pms->{msg}->get_pristine(), undef ]);
     }
 
     # Scan each buffer through the chosen helper. A buffer over yarad_max_size is
@@ -178,12 +182,13 @@ sub parsed_metadata {
     # $err tracks whether any scanned (non-size-skipped) buffer errored (returned undef).
     my $ok;
     my $err = 0;
-    for my $buf (@bufs) {
+    for my $part (@parts) {
+        my ($buf, $fname) = @$part;
         if ($max > 0 && length($buf) > $max) {
             dbg("yarad: buffer %d bytes > yarad_max_size %d, skipping", length($buf), $max);
             next;
         }
-        my $r = $self->$helper($pms, $conf, \$buf);
+        my $r = $self->$helper($pms, $conf, \$buf, $fname);
         if (defined $r) {
             $ok = $r;   # a completed scan makes the aggregate defined
         } else {
@@ -217,9 +222,10 @@ sub parsed_metadata {
 
 # _scan_http POSTs the message to <yarad_url>/scan and fills the cache from the
 # JSON verdict. Returns 1 on a completed scan (match or clean), undef on a
-# transport/HTTP error.
+# transport/HTTP error. $fname (optional) is the attachment filename forwarded
+# as a base64 X-YARAD-Filename header so name/extension-keyed YARA rules fire.
 sub _scan_http {
-    my ($self, $pms, $conf, $msgref) = @_;
+    my ($self, $pms, $conf, $msgref, $fname) = @_;
 
     my $have = eval { require HTTP::Tiny; require JSON::PP; 1 };
     if (!$have) {
@@ -238,6 +244,12 @@ sub _scan_http {
     );
     my $tok = $self->_token($conf);
     $headers{'X-YARAD-Token'} = $tok if defined $tok && length $tok;
+    # Forward the attachment filename so name/extension-keyed YARA rules can fire.
+    # Base64-encode (same wire format as yara.lua) to keep embedded newlines / control
+    # bytes from injecting HTTP headers. Omit the header entirely when no name.
+    if (defined $fname && length $fname) {
+        $headers{'X-YARAD-Filename'} = MIME::Base64::encode_base64($fname, '');
+    }
 
     my $http = HTTP::Tiny->new(
         timeout => $conf->{yarad_timeout} || 10,
@@ -275,9 +287,11 @@ sub _scan_http {
 # _scan_shellout pipes the message to the yarad-scan client and reads its exit
 # code (0 clean, 1 match). It can't see per-rule score, so YARAD_HIGH never fires
 # in this mode; the matched rule names are parsed from the client's stdout.
-# Returns 1 on a completed scan, undef on a spawn/transport failure.
+# Returns 1 on a completed scan, undef on a spawn/transport failure. $fname
+# (optional) is forwarded via the client's -filename flag so name/extension-keyed
+# YARA rules fire on attachments.
 sub _scan_shellout {
-    my ($self, $pms, $conf, $msgref) = @_;
+    my ($self, $pms, $conf, $msgref, $fname) = @_;
 
     my $bin = $conf->{yarad_scan_bin};
     if (!defined $bin || !-x $bin) {
@@ -294,6 +308,8 @@ sub _scan_shellout {
     );
     my $tf = $conf->{yarad_token_file};
     push @args, ('-token-file', $tf) if defined $tf && length $tf && -r $tf;
+    # Forward the attachment filename so name/extension-keyed YARA rules fire.
+    push @args, ('-filename', $fname) if defined $fname && length $fname;
 
     # Bidirectional spawn: write the message to the child's stdin, read its
     # stdout. (open2 would do, but a manual fork keeps the dependency surface to
@@ -342,15 +358,18 @@ sub _scan_shellout {
     return undef;
 }
 
-# _message_part_buffers returns the DECODED body of each leaf MIME part, in
-# message order, skipping parts with no body. find_parts(qr/./, 1) walks leaf
-# parts only (onlyleaves=1); ->decode() returns the part body with transfer
-# encoding (base64/quoted-printable) undone, so a base64 attachment is scanned
-# as its real bytes rather than its wrapped text. Returns an empty list when the
-# message has no leaf bodies (caller falls back to the pristine message).
+# _message_part_buffers returns an array of [ $decoded_body, $filename_or_undef ]
+# pairs, one per leaf MIME part with a non-empty body, in message order.
+# find_parts(qr/./, 1) walks leaf parts only (onlyleaves=1); ->decode() undoes
+# transfer encoding (base64/quoted-printable) so a base64 attachment is scanned
+# as its real bytes. The attachment filename — from Content-Disposition or
+# Content-Type — travels alongside the body so HTTP mode can send X-YARAD-Filename
+# and shellout mode can pass -filename, enabling name/extension-keyed YARA rules.
+# Returns an empty list when the message has no leaf bodies (caller falls back to
+# the pristine message, which has no filename).
 sub _message_part_buffers {
     my ($self, $pms) = @_;
-    my @bufs;
+    my @out;
     my @parts = eval { $pms->{msg}->find_parts(qr/./, 1) };
     if ($@) {
         info("yarad: find_parts failed: %s", $@);
@@ -359,9 +378,30 @@ sub _message_part_buffers {
     for my $part (@parts) {
         my $body = eval { $part->decode() };
         next unless defined $body && length $body;
-        push @bufs, $body;
+        # Prefer the filename from Content-Disposition (RFC 2183); fall back to
+        # the name= parameter of Content-Type.
+        my $fname = eval { $part->get_header('content-disposition') };
+        if (defined $fname && $fname =~ /filename\*?=(?:"([^"]+)"|(\S+))/i) {
+            $fname = $1 // $2;
+            $fname =~ s/;\s*$//;    # trim trailing semicolons
+        } else {
+            $fname = eval { $part->get_header('content-type') };
+            if (defined $fname && $fname =~ /name\s*=\s*(?:"([^"]+)"|(\S+))/i) {
+                $fname = $1 // $2;
+                $fname =~ s/;\s*$//;
+            } else {
+                $fname = undef;
+            }
+        }
+        # Sanitize: strip directory components and trim whitespace.
+        if (defined $fname) {
+            $fname =~ s/^\s+|\s+$//g;
+            $fname =~ s{.*/}{};     # basename only
+            $fname = undef unless length $fname;
+        }
+        push @out, [ $body, $fname ];
     }
-    return @bufs;
+    return @out;
 }
 
 # _token reads the shared secret from yarad_token_file, trimmed. Returns undef

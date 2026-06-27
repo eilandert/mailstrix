@@ -169,6 +169,12 @@ func cmdServe(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	// Re-apply all sanitize clamps after flag overlay so a non-positive flag
+	// value (e.g. -scan-timeout=0) cannot disable safety guards that LoadConfig
+	// set on startup. Finalize is idempotent: clamping an already-valid value
+	// is a no-op. The scanner copies cfg.ScanTimeout at construction time, so
+	// the clamp must happen before EnsureCachedRules/NewScanner.
+	cfg.Finalize()
 
 	logf := func(format string, a ...any) { log.Printf("[yarad] "+format, a...) }
 

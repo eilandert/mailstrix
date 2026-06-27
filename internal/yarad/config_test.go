@@ -104,6 +104,44 @@ func TestSanitizeClamps(t *testing.T) {
 	}
 }
 
+// TestFinalizeClampsScanTimeout guards the CLI flag overlay bug: a non-positive
+// -scan-timeout passed after LoadConfig must be re-clamped to 8s by Finalize
+// so the libyara/extraction deadline is never disabled. Finalize must be
+// idempotent — calling it twice on a valid config must not change values.
+func TestFinalizeClampsScanTimeout(t *testing.T) {
+	cases := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{"zero disables guard", 0, 8 * time.Second},
+		{"negative disables guard", -1 * time.Second, 8 * time.Second},
+		{"positive preserved", 5 * time.Second, 5 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Config{
+				Host:           "0.0.0.0",
+				Port:           8079,
+				MaxConcurrent:  1,
+				BackendTimeout: time.Second,
+				ScanTimeout:    tc.timeout,
+				MaxBody:        8 * 1024 * 1024,
+			}
+			c.Finalize()
+			if c.ScanTimeout != tc.want {
+				t.Errorf("after Finalize: ScanTimeout = %s, want %s", c.ScanTimeout, tc.want)
+			}
+			// Idempotency: second call must not change a valid result.
+			before := c.ScanTimeout
+			c.Finalize()
+			if c.ScanTimeout != before {
+				t.Errorf("Finalize not idempotent: %s -> %s", before, c.ScanTimeout)
+			}
+		})
+	}
+}
+
 func TestEnvBool(t *testing.T) {
 	for _, v := range []string{"1", "true", "yes", "on", "TRUE", "On"} {
 		t.Setenv("X", v)

@@ -231,6 +231,13 @@ func LoadConfig() *Config {
 	return c
 }
 
+// Finalize re-applies the same clamps as the initial load, so any CLI flag
+// overlay that sets a non-positive value (e.g. -scan-timeout=0) is caught and
+// reset to its safe default before the scanner or server is constructed.
+// Calling it more than once is safe (idempotent: clamping an already-valid
+// value leaves it unchanged).
+func (c *Config) Finalize() { c.sanitize() }
+
 // sanitize clamps invalid numeric configuration to safe defaults so a bad env
 // value cannot disable the service or crash it (negative concurrency panics
 // make(chan), an out-of-range port fails to bind). Each clamp is logged.

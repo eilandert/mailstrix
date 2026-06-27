@@ -341,6 +341,33 @@ func TestScanOversizedIsError(t *testing.T) {
 	}
 }
 
+// TestScanTimeoutZeroStillScans guards the CLI flag overlay bug: a non-positive
+// -scan-timeout (e.g. -scan-timeout=0 or -scan-timeout=-1s) must be re-clamped
+// to 8s by Finalize after flag parsing, so the libyara deadline is never
+// disabled. The scan must complete normally — a match is still reported and no
+// scanner-construction error is returned.
+func TestScanTimeoutZeroStillScans(t *testing.T) {
+	withRules(t, eicarRule)
+	f := filepath.Join(t.TempDir(), "sample.txt")
+	if err := os.WriteFile(f, []byte(eicarPayload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"-scan-timeout=0", "-scan-timeout=-1s"} {
+		t.Run(flag, func(t *testing.T) {
+			var code int
+			out := captureStdout(t, func() { code = cmdScan([]string{flag, f}) })
+			// A match must still fire (exit 1) — the flag must not cause a
+			// scanner-load error (exit 2) or suppress the deadline entirely.
+			if code != 1 {
+				t.Fatalf("cmdScan(%s): exit = %d, want 1 (match); output: %q", flag, code, out)
+			}
+			if !strings.Contains(out, "MATCH") {
+				t.Errorf("cmdScan(%s): output = %q, want MATCH", flag, out)
+			}
+		})
+	}
+}
+
 // TestScanSeedRulesSeeding guards Bug 2 for cmdScan: with a compiled .yac seed,
 // a temp cache dir, and NO YARAD_RULES/YARAD_RULES_DIR, `yarad scan` must seed
 // the cache from the seed (exactly as `serve` does) so the daemon's Docker-image
