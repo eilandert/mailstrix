@@ -146,8 +146,9 @@ func fromXLSBExternalDDE(zr *zip.Reader, out *[][]byte, deadline time.Time) {
 func scanXLSBSupBookDDE(raw []byte, out *[][]byte) {
 	records := 0
 	pos := 0
+	ddeCount := countXLSBDDE(*out)
 	for pos < len(raw) {
-		if records >= maxBIFF12Records || countXLSBDDE(*out) >= maxXLSBSupBookDDE {
+		if records >= maxBIFF12Records || ddeCount >= maxXLSBSupBookDDE {
 			return
 		}
 		records++
@@ -185,6 +186,7 @@ func scanXLSBSupBookDDE(raw []byte, out *[][]byte) {
 			marker = marker[:maxBIFF12RecordLen]
 		}
 		*out = append(*out, []byte(marker))
+		ddeCount++
 	}
 }
 

@@ -1014,6 +1014,7 @@ func fromOOXMLRels(zr *zip.Reader, out *[][]byte, deadline time.Time) {
 		Rels []xmlRel `xml:"Relationship"`
 	}
 
+	extRels := countExternalRels(*out)
 	relsSeen := 0
 	for _, f := range zr.File {
 		if expired(deadline) {
@@ -1051,7 +1052,7 @@ func fromOOXMLRels(zr *zip.Reader, out *[][]byte, deadline time.Time) {
 			if expired(deadline) {
 				break
 			}
-			if len(*out) >= maxStreams || countExternalRels(*out) >= maxExternalRels {
+			if len(*out) >= maxStreams || extRels >= maxExternalRels {
 				break
 			}
 			if !strings.EqualFold(rel.TargetMode, "External") {
@@ -1080,6 +1081,7 @@ func fromOOXMLRels(zr *zip.Reader, out *[][]byte, deadline time.Time) {
 			}
 			stream := []byte("OOXML-EXTERNAL-REL " + typLabel + " " + target)
 			*out = append(*out, stream)
+			extRels++
 		}
 	}
 }
@@ -1182,12 +1184,13 @@ func fromOOXMLDDE(zr *zip.Reader, out *[][]byte, deadline time.Time) {
 	// comments*) — not a fixed four-name list that missed header2+, footnotes, etc.
 	// Bounded by maxDDEParts (parts scanned), maxDDEFields/maxStreams (emitted),
 	// the per-part size cap, and the deadline.
+	ddeCount := countDDEFields(*out)
 	parts := 0
 	for _, f := range zr.File {
 		if expired(deadline) {
 			break
 		}
-		if countDDEFields(*out) >= maxDDEFields || len(*out) >= maxStreams || parts >= maxDDEParts {
+		if ddeCount >= maxDDEFields || len(*out) >= maxStreams || parts >= maxDDEParts {
 			break
 		}
 		if !isDDEDocPart(f.Name) {
@@ -1206,7 +1209,9 @@ func fromOOXMLDDE(zr *zip.Reader, out *[][]byte, deadline time.Time) {
 		if err != nil || len(raw) == 0 {
 			continue
 		}
+		priorLen := len(*out)
 		parseDDEFields(raw, out, deadline)
+		ddeCount += len(*out) - priorLen
 	}
 }
 
@@ -1226,6 +1231,7 @@ func parseDDEFields(raw []byte, out *[][]byte, deadline time.Time) {
 
 	var instrBuf strings.Builder // accumulates w:instrText for one complex field
 	inComplexField := false
+	ddeFields := countDDEFields(*out)
 
 	emitIfDDE := func(instr string) {
 		// norm = collapse every run of Unicode whitespace to a single space
@@ -1242,7 +1248,7 @@ func parseDDEFields(raw []byte, out *[][]byte, deadline time.Time) {
 		if !strings.HasPrefix(upper, "DDE") {
 			return
 		}
-		if countDDEFields(*out) >= maxDDEFields || len(*out) >= maxStreams {
+		if ddeFields >= maxDDEFields || len(*out) >= maxStreams {
 			return
 		}
 		// Emit `<directive> <tail>`: the directive token (DDE/DDEAUTO) is made
@@ -1270,6 +1276,7 @@ func parseDDEFields(raw []byte, out *[][]byte, deadline time.Time) {
 			emit += " " + tail
 		}
 		*out = append(*out, []byte("OOXML-DDE-FIELD "+emit))
+		ddeFields++
 	}
 
 	for {

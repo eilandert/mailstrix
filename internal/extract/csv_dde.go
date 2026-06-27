@@ -107,8 +107,9 @@ func fromCSVDDE(buf []byte, res *Result, deadline time.Time) {
 
 	rest := buf
 	lines := 0
+	csvDDE := countCSVDDE(res.Streams)
 	for len(rest) > 0 {
-		if lines >= maxCSVLines || countCSVDDE(res.Streams) >= maxCSVDDEMarkers ||
+		if lines >= maxCSVLines || csvDDE >= maxCSVDDEMarkers ||
 			len(res.Streams) >= maxStreams || expired(deadline) {
 			break
 		}
@@ -122,7 +123,9 @@ func fromCSVDDE(buf []byte, res *Result, deadline time.Time) {
 		if len(line) > maxCSVLineLen {
 			line = line[:maxCSVLineLen]
 		}
+		priorLen := len(res.Streams)
 		scanCSVLine(line, res, deadline)
+		csvDDE += len(res.Streams) - priorLen
 	}
 }
 
@@ -138,8 +141,9 @@ func scanCSVLine(line []byte, res *Result, deadline time.Time) {
 		delim = '\t'
 	}
 	cells := 0
+	cellDDE := countCSVDDE(res.Streams)
 	for len(line) > 0 {
-		if cells >= maxCSVCellsPerLine || countCSVDDE(res.Streams) >= maxCSVDDEMarkers ||
+		if cells >= maxCSVCellsPerLine || cellDDE >= maxCSVDDEMarkers ||
 			len(res.Streams) >= maxStreams || expired(deadline) {
 			return
 		}
@@ -156,7 +160,9 @@ func scanCSVLine(line []byte, res *Result, deadline time.Time) {
 		} else {
 			cell, line = line, nil
 		}
+		priorLen := len(res.Streams)
 		emitIfCSVDDE(cell, res)
+		cellDDE += len(res.Streams) - priorLen
 	}
 }
 
@@ -310,10 +316,12 @@ func fromSpreadsheetML(buf []byte, res *Result, deadline time.Time) {
 		buf = buf[:maxBytesPerDocXML]
 	}
 
+	csvDDE := countCSVDDE(res.Streams)
+
 	// 1) ss:Formula="..." attributes.
 	rest := buf
 	for {
-		if countCSVDDE(res.Streams) >= maxCSVDDEMarkers || len(res.Streams) >= maxStreams || expired(deadline) {
+		if csvDDE >= maxCSVDDEMarkers || len(res.Streams) >= maxStreams || expired(deadline) {
 			return
 		}
 		i := bytes.Index(rest, ssFormulaAttr)
@@ -325,13 +333,15 @@ func fromSpreadsheetML(buf []byte, res *Result, deadline time.Time) {
 		if v == nil {
 			continue
 		}
+		priorLen := len(res.Streams)
 		emitIfCSVDDE([]byte(attrValue(v)), res)
+		csvDDE += len(res.Streams) - priorLen
 	}
 
 	// 2) <Data ...>=...</Data> element text.
 	rest = buf
 	for {
-		if countCSVDDE(res.Streams) >= maxCSVDDEMarkers || len(res.Streams) >= maxStreams || expired(deadline) {
+		if csvDDE >= maxCSVDDEMarkers || len(res.Streams) >= maxStreams || expired(deadline) {
 			return
 		}
 		i := bytes.Index(rest, ssDataOpen)
@@ -348,7 +358,9 @@ func fromSpreadsheetML(buf []byte, res *Result, deadline time.Time) {
 		if end < 0 {
 			end = len(body)
 		}
+		priorLen := len(res.Streams)
 		emitIfCSVDDE([]byte(unescapeXMLText(string(body[:end]))), res)
+		csvDDE += len(res.Streams) - priorLen
 		rest = body
 	}
 }
