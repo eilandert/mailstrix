@@ -1302,13 +1302,21 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 			vbaKeys[streamDedupKey(vs)] = struct{}{}
 		}
 	}
+	// PERF-36: each res.Streams entry's content key was hashed twice — once in the
+	// scan-dedup loop (scanExtracted) and again in the feed-dedup loop below.
+	// Compute it once per stream here (index-aligned with res.Streams) and reuse it
+	// in both places. Same xxh128 streamDedupKey domain, so dedup behaviour is
+	// byte-identical; only the redundant second hash per stream is removed.
+	streamKeys := make([][16]byte, len(res.Streams))
+	for i, stream := range res.Streams {
+		streamKeys[i] = streamDedupKey(stream)
+	}
 	// scanExtracted runs one extracted entry (real content stream OR an out-of-band
 	// marker) through dedup, the shared scan budget, and merge. Returns true when
 	// the budget is exhausted so the caller stops the whole sweep. Markers and
 	// Streams share one `seen` set and one budget — a marker byte-identical to a
 	// real stream is scanned once, and markers can't overrun the deadline.
-	scanExtracted := func(stream []byte, markerChannel bool) (stop bool) {
-		h := streamDedupKey(stream)
+	scanExtracted := func(stream []byte, h [16]byte, markerChannel bool) (stop bool) {
 		if _, dup := seen[h]; dup {
 			s.exDeduped.Add(1)
 			return false
@@ -1392,8 +1400,8 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 		}
 		return false
 	}
-	for _, stream := range res.Streams {
-		if scanExtracted(stream, false) {
+	for i, stream := range res.Streams {
+		if scanExtracted(stream, streamKeys[i], false) {
 			break
 		}
 	}
@@ -1405,7 +1413,8 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 	// zero-FP on the synthetic literal only (never on attacker-controlled bytes).
 	if d := extMismatch(res, meta.Extension); d != "" {
 		s.exExtMismatch.Add(1)
-		scanExtracted([]byte(extMismatchMarkerPrefix+" "+d), true)
+		mk := []byte(extMismatchMarkerPrefix + " " + d)
+		scanExtracted(mk, streamDedupKey(mk), true)
 	}
 	// PLAN-marker-channel Phase 2: the out-of-band PURE markers are still scanned
 	// against the full ruleset, but filterMarkerChannel now keeps ONLY
@@ -1415,7 +1424,7 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 	// are unaffected. Phase 3 will compile a markers.yac so marker rules execute
 	// ONLY on this channel (the perf win), making the filter redundant.
 	for _, marker := range res.Markers {
-		if scanExtracted(marker, true) {
+		if scanExtracted(marker, streamDedupKey(marker), true) {
 			break
 		}
 	}
@@ -1523,13 +1532,15 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 		// streamDedupKey (xxhash 128-bit) as the YARA-scan dedup loop above.
 		// buf is processed first (unchanged); unique streams follow in first-
 		// occurrence order (mirrors the original walk, minus the wasteful dups).
-		// Seeding with streamDedupKey(buf) here rather than meta.RawKey because
-		// meta.RawKey is zero on the CLI path; the single hash cost is negligible.
 		fedSeen := make(map[[16]byte]struct{}, len(res.Streams)+1)
-		fedSeen[streamDedupKey(buf)] = struct{}{}
+		// PERF-36: reuse the raw-body key (rawSeed = meta.RawKey when the handler
+		// precomputed it, else streamDedupKey(buf) — same value the scan-dedup set was
+		// seeded with, and correct on the CLI path) plus the per-stream keys computed
+		// once above, instead of re-hashing buf and every stream a second time.
+		fedSeen[rawSeed] = struct{}{}
 		addFeedHits(buf)
-		for _, stream := range res.Streams {
-			k := streamDedupKey(stream)
+		for i, stream := range res.Streams {
+			k := streamKeys[i]
 			if _, dup := fedSeen[k]; dup {
 				continue
 			}

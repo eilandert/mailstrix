@@ -819,6 +819,45 @@ func TestStreamDeduplication(t *testing.T) {
 	}
 }
 
+// TestPerStreamKeyReuse (PERF-36) guards the precomputed-key path: the dup-stream
+// fixture is scanned WITH the feed-dedup path active (the only place that, before
+// PERF-36, re-hashed every stream a second time). The dedup count and the match
+// set must be identical to the plain dedup test — the per-stream keys are computed
+// once and reused for both the scan-dedup and feed-dedup sets, so a stale or
+// mis-indexed key would either drop a real stream or skip a unique one and change
+// the output. (Feeds are disabled here — newScanner sets no feed keys — so the
+// feed loop runs its dedup walk over the precomputed keys without external I/O.)
+func TestPerStreamKeyReuse(t *testing.T) {
+	buf, err := os.ReadFile(filepath.Join("testdata", "dup_vba_streams.xlsm"))
+	if err != nil {
+		t.Fatalf("fixture unavailable: %v", err)
+	}
+	rule := `rule VBA_Attr { strings: $a = "Attribute VB_Name" condition: $a }`
+	s := newScanner(t, writeRules(t, rule))
+	m, err := scanT(s, buf, ScanMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) == 0 {
+		t.Fatal("expected VBA_Attr match on the dup-stream fixture; got none")
+	}
+	if s.ExtractMetrics().Deduped == 0 {
+		t.Error("Deduped = 0: per-stream key reuse must still skip byte-identical streams")
+	}
+	// A second scan with the handler-supplied RawKey set must dedup identically:
+	// rawSeed prefers meta.RawKey, and that value equals streamDedupKey(buf), so
+	// the raw-body skip + feed seed behave the same as the CLI (zero RawKey) path.
+	s2 := newScanner(t, writeRules(t, rule))
+	meta := ScanMeta{RawKey: StreamDedupKey(buf)}
+	m2, err := s2.Scan(buf, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2) != len(m) {
+		t.Errorf("match count differs with RawKey set: got %d, want %d (rawSeed reuse changed dedup)", len(m2), len(m))
+	}
+}
+
 // TestScanPooledScannerNoExternalLeak guards PERF-2: yara.Scanner objects are
 // pooled across scans, so an external set on one scan must not leak into the
 // next. Scan a body with filename "x.exe" (matches, sets the filename external,
