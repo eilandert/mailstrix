@@ -133,9 +133,16 @@ Three ways, pick one:
 [release](https://github.com/eilandert/rspamd-yarad/releases/latest):
 
 ```sh
+# Resolve the latest version + your arch (release assets are version-pinned,
+# e.g. yarad_1.1.1_amd64.deb — the bare latest/download/ path is not).
+VER=$(curl -fsSL https://api.github.com/repos/eilandert/rspamd-yarad/releases/latest \
+        | grep -oP '"tag_name":\s*"v\K[^"]+')
+ARCH=$(dpkg --print-architecture)   # amd64 or arm64
+BASE=https://github.com/eilandert/rspamd-yarad/releases/download/v${VER}
+
 # yarad — the daemon (systemd unit + /etc/yarad/yarad.env config)
-curl -fsSLO https://github.com/eilandert/rspamd-yarad/releases/latest/download/yarad_1.1.0_amd64.deb
-sudo apt install ./yarad_1.1.0_amd64.deb
+curl -fsSLO "${BASE}/yarad_${VER}_${ARCH}.deb"
+sudo apt install "./yarad_${VER}_${ARCH}.deb"
 
 # fetch the rolling compiled rule bundle into the cache dir, then start it
 sudo -u yarad yarad fetch-rules -cache-dir /var/cache/yarad   # or drop your own .yar in /var/lib/yarad/rules
@@ -143,8 +150,8 @@ sudoedit /etc/yarad/yarad.env                                 # set YARAD_TOKEN,
 sudo systemctl enable --now yarad
 
 # yarad-scan — the lean CGO-free Sieve/LDA client (no daemon)
-curl -fsSLO https://github.com/eilandert/rspamd-yarad/releases/latest/download/yarad-scan_1.1.0_amd64.deb
-sudo apt install ./yarad-scan_1.1.0_amd64.deb
+curl -fsSLO "${BASE}/yarad-scan_${VER}_${ARCH}.deb"
+sudo apt install "./yarad-scan_${VER}_${ARCH}.deb"
 ```
 
 The daemon package installs a hardened systemd unit (unprivileged `yarad` user,
