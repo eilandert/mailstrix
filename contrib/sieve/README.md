@@ -1,7 +1,7 @@
 # Scan mail with the remote yarad from Dovecot / Sieve
 
 This directory wires a **Dovecot Sieve** delivery rule to a central
-[`yarad serve`](../README.md) using the lean **`yarad-scan`** client — for a
+[`yarad serve`](../../README.md) using the lean **`yarad-scan`** client — for a
 mail-delivery box (Dovecot LDA / LMTP) that should stay thin and carries **no
 YARA rules and no libyara** of its own.
 
@@ -31,7 +31,7 @@ as *clean* (exit 0), so a scanner outage never blocks or bounces delivery.
 
 ## Setup
 
-1. **Run the scanner** somewhere central (see the [main README](../README.md)):
+1. **Run the scanner** somewhere central (see the [main README](../../README.md)):
 
    ```sh
    docker run -d --name yarad -e YARAD_TOKEN_FILE=/run/secrets/yarad_token \
@@ -102,4 +102,4 @@ files into `Junk/Yara`.
 - **Performance:** the server-side verdict cache means repeated/bulk messages are
   near-free; the client just does one POST per delivery.
 
-See also: the [main README](../README.md) · the [rspamd plugin](../rspamd/).
+See also: the [main README](../../README.md) · the [rspamd plugin](../rspamd/).

@@ -1,7 +1,7 @@
 # Scan mail with the remote yarad from SpamAssassin
 
 This directory wires **SpamAssassin** to a central
-[`yarad serve`](../README.md): every message SpamAssassin filters is handed to
+[`yarad serve`](../../README.md): every message SpamAssassin filters is handed to
 yarad, and a YARA malware match becomes a SpamAssassin rule hit that lands in the
 spam score next to everything else. It is the SpamAssassin sibling of the rspamd
 [`yara.lua`](../rspamd/) plugin and the Dovecot/Sieve [`yarad-scan`](../sieve/)
@@ -40,7 +40,7 @@ transport for both Sieve and SpamAssassin.
 
 ## Setup
 
-1. **Run the scanner** somewhere central (see the [main README](../README.md)):
+1. **Run the scanner** somewhere central (see the [main README](../../README.md)):
 
    ```sh
    docker run -d --name yarad -e YARAD_TOKEN_FILE=/run/secrets/yarad_token \
@@ -98,7 +98,7 @@ spam threshold on their own. Tune in `yarad.cf`; per-rule scoring via the
 
 ## See also
 
-- **[Main README](../README.md)** — the `yarad serve` scanner this talks to.
+- **[Main README](../../README.md)** — the `yarad serve` scanner this talks to.
 - **[rspamd plugin](../rspamd/)** — the async `yara.lua` scorer for rspamd.
 - **[Dovecot/Sieve example](../sieve/)** — quarantine a match at delivery with
   the `yarad-scan` client (the binary the shellout mode reuses).
