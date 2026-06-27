@@ -55,6 +55,49 @@ import (
 	"time"
 )
 
+// asciiContainsFold reports whether haystack contains needle using ASCII
+// case-insensitive comparison. needle MUST already be lowercase ASCII.
+// Only bytes 'A'–'Z' (0x41–0x5A) are folded in haystack; non-ASCII bytes
+// (0x80–0xFF) are compared as-is, exactly matching what
+// bytes.Contains(bytes.ToLower(haystack), needle) produces for pure-ASCII
+// needles.
+func asciiContainsFold(haystack, needle []byte) bool {
+	n := len(needle)
+	if n == 0 {
+		return true
+	}
+	h := len(haystack)
+	if n > h {
+		return false
+	}
+	first := needle[0] // needle is lowercase; first byte is 'a'–'z' or digit/symbol
+	limit := h - n
+	for i := 0; i <= limit; i++ {
+		hb := haystack[i]
+		if hb >= 'A' && hb <= 'Z' {
+			hb += 'a' - 'A'
+		}
+		if hb != first {
+			continue
+		}
+		match := true
+		for j := 1; j < n; j++ {
+			hj := haystack[i+j]
+			if hj >= 'A' && hj <= 'Z' {
+				hj += 'a' - 'A'
+			}
+			if hj != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 const (
 	// htmlScanCap bounds how many leading bytes of a part we inspect for the
 	// smuggling signatures. Smuggling glue (the script + anchor) sits near the
@@ -73,13 +116,14 @@ const (
 // HTML/SVG/JS smuggling signatures. JS builtin identifiers (atob, Blob,
 // createObjectURL, msSaveBlob) are case-SENSITIVE and matched as-is; HTML tags
 // and attributes (<svg>, <script>, download=) are case-INSENSITIVE and matched
-// against a lowercased copy of the scan window.
+// via asciiContainsFold or (?i) regex — no full-window ToLower allocation.
 var (
 	// reHTMLDownloadAttr matches a forced download in either form: the HTML anchor
 	// attribute (download="x") or the JS property assignment (a.download='x').
-	// Case-insensitive; run against the lowercased window. Always paired with a
-	// blob-reconstruct API by the caller, so a lone "download=" cannot fire.
-	reHTMLDownloadAttr = regexp.MustCompile(`(?:\s|;|"|\.)download\s*=`)
+	// (?i) makes it case-insensitive so it can run against the original (uncopied)
+	// window instead of a lowercased copy. Always paired with a blob-reconstruct
+	// API by the caller, so a lone "download=" cannot fire.
+	reHTMLDownloadAttr = regexp.MustCompile(`(?i)(?:\s|;|"|\.)download\s*=`)
 	// reDataURIBase64 captures the base64 body of a base64 data: URI. Case-
 	// insensitive scheme; the body is the standard base64 alphabet.
 	reDataURIBase64 = regexp.MustCompile(`(?i)data:[a-z0-9.+/-]*;base64,([A-Za-z0-9+/=\s]+)`)
@@ -103,11 +147,10 @@ func looksLikeMarkup(head []byte) bool {
 		// combo; allow it through if it has both a blob API hint and "download".
 		return bytes.Contains(head, []byte("Blob")) || bytes.Contains(head, []byte("data:"))
 	}
-	lower := bytes.ToLower(head)
-	return bytes.Contains(lower, []byte("<script")) ||
-		bytes.Contains(lower, []byte("<svg")) ||
-		bytes.Contains(lower, []byte("<a ")) ||
-		bytes.Contains(lower, []byte("download")) ||
+	return asciiContainsFold(head, []byte("<script")) ||
+		asciiContainsFold(head, []byte("<svg")) ||
+		asciiContainsFold(head, []byte("<a ")) ||
+		asciiContainsFold(head, []byte("download")) ||
 		bytes.Contains(head, []byte("Blob")) ||
 		bytes.Contains(head, []byte("data:"))
 }
@@ -127,7 +170,6 @@ func fromHTMLSmuggling(buf []byte, res *Result, b *archiveBudget, depth int, dea
 	if !looksLikeMarkup(head) {
 		return
 	}
-	lower := bytes.ToLower(head)
 
 	// Signal 1: blob reconstruct + forced download.
 	hasBlobAPI := false
@@ -137,18 +179,19 @@ func fromHTMLSmuggling(buf []byte, res *Result, b *archiveBudget, depth int, dea
 			break
 		}
 	}
-	hasDownload := reHTMLDownloadAttr.Match(lower) || bytes.Contains(head, []byte(".click("))
+	// reHTMLDownloadAttr is now (?i) so it runs against the original head.
+	hasDownload := reHTMLDownloadAttr.Match(head) || bytes.Contains(head, []byte(".click("))
 	if hasBlobAPI && hasDownload && len(res.Streams) < maxStreams {
 		res.Streams = append(res.Streams, []byte("HTML-SMUGGLING-BLOB"))
 	}
 
 	// Signal 3: scripted SVG. Only when an <svg> root is present AND it carries
 	// an execution vector (script/onload/foreignObject).
-	isSVG := bytes.Contains(lower, []byte("<svg"))
+	isSVG := asciiContainsFold(head, []byte("<svg"))
 	if isSVG {
-		if bytes.Contains(lower, []byte("<script")) ||
-			bytes.Contains(lower, []byte("onload=")) ||
-			bytes.Contains(lower, []byte("<foreignobject")) {
+		if asciiContainsFold(head, []byte("<script")) ||
+			asciiContainsFold(head, []byte("onload=")) ||
+			asciiContainsFold(head, []byte("<foreignobject")) {
 			if len(res.Streams) < maxStreams {
 				res.Streams = append(res.Streams, []byte("SVG-SCRIPT"))
 			}

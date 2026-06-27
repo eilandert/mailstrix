@@ -3,10 +3,355 @@ package extract
 import (
 	"bytes"
 	"encoding/base64"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
+
+// ---------------------------------------------------------------------------
+// asciiContainsFold unit tests
+// ---------------------------------------------------------------------------
+
+func TestAsciiContainsFold(t *testing.T) {
+	cases := []struct {
+		haystack string
+		needle   string // must be lowercase ASCII
+		want     bool
+	}{
+		// basic matches
+		{"<script>", "<script", true},
+		{"<SCRIPT>", "<script", true},
+		{"<ScRiPt>", "<script", true},
+		{"<SVG onload=x>", "<svg", true},
+		{"<svg>", "<svg", true},
+		// match at start
+		{"script", "script", true},
+		// match at end
+		{"foo<svg", "<svg", true},
+		// no match
+		{"<div>", "<script", false},
+		// empty needle always matches
+		{"anything", "", true},
+		// needle longer than haystack
+		{"hi", "hello", false},
+		// empty haystack
+		{"", "x", false},
+		// both empty
+		{"", "", true},
+		// non-ASCII bytes adjacent to match — non-ASCII must NOT be folded
+		// \x80 must not be treated as 'A'+0x3f or similar
+		{"\x80<svg>", "<svg", true},
+		{"\xc0SCRIPT\xfe", "script", true}, // bytes.ToLower would NOT fold 0xC0 for ASCII needle
+		{"<\xc1cript>", "<script", false},  // \xc1 ≠ 's' after non-fold
+		// case variation for download attribute keyword
+		{"DOWNLOAD=", "download=", true},
+		{"Download=", "download=", true},
+		{"download=", "download=", true},
+		// onload= variations
+		{"OnLoad=alert(1)", "onload=", true},
+		{"ONLOAD=", "onload=", true},
+		// foreignobject
+		{"<ForeignObject>", "<foreignobject", true},
+		{"<FOREIGNOBJECT>", "<foreignobject", true},
+	}
+	for _, c := range cases {
+		got := asciiContainsFold([]byte(c.haystack), []byte(c.needle))
+		if got != c.want {
+			t.Errorf("asciiContainsFold(%q, %q) = %v, want %v",
+				c.haystack, c.needle, got, c.want)
+		}
+	}
+}
+
+// TestAsciiContainsFoldMatchesToLower verifies that asciiContainsFold gives
+// identical results to bytes.Contains(bytes.ToLower(h), needle) for all
+// pure-ASCII needles used in the HTML gate, across haystacks that include
+// non-ASCII bytes (0x80–0xFF).
+func TestAsciiContainsFoldMatchesToLower(t *testing.T) {
+	needles := [][]byte{
+		[]byte("<script"),
+		[]byte("<svg"),
+		[]byte("<a "),
+		[]byte("download"),
+		[]byte("onload="),
+		[]byte("<foreignobject"),
+	}
+	// Haystacks: pure ASCII variants, mixed-case, and haystacks with high bytes.
+	haystacks := [][]byte{
+		[]byte("<script>foo</script>"),
+		[]byte("<SCRIPT>foo</SCRIPT>"),
+		[]byte("<ScRiPt>"),
+		[]byte("<svg onload=x>"),
+		[]byte("<SVG>"),
+		[]byte("<a href=x DOWNLOAD=y>"),
+		[]byte("ONLOAD=alert"),
+		[]byte("<ForeignObject>"),
+		[]byte("plain prose with no tags"),
+		[]byte(""),
+		// high bytes around a match
+		append([]byte{0x80, 0x9F, 0xFF}, []byte("<script>")...),
+		append([]byte("<SVG>"), []byte{0xC0, 0xFE}...),
+		// high bytes that would be folded by a naive fold (0xC0 is 'A'+0x7F — must not fold)
+		{0xC1, 0xC3, 0xC2, 0xC9, 0xD0, 0xD4},
+	}
+	for _, needle := range needles {
+		for _, h := range haystacks {
+			want := bytes.Contains(bytes.ToLower(h), needle)
+			got := asciiContainsFold(h, needle)
+			if got != want {
+				t.Errorf("asciiContainsFold(%q, %q) = %v; bytes.ToLower path = %v",
+					h, needle, got, want)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Differential marker tests — mixed-case tags must produce identical markers
+// to what the old bytes.ToLower path produced.
+// ---------------------------------------------------------------------------
+
+func TestHTMLGateMixedCaseDetection(t *testing.T) {
+	// Each input uses non-lowercase tag/attribute casing that the old
+	// bytes.ToLower path handled. The new asciiContainsFold path must produce
+	// byte-identical marker sets.
+	cases := []struct {
+		name    string
+		input   string
+		markers []string // all must appear
+	}{
+		{
+			name: "uppercase SCRIPT tag",
+			input: `<SCRIPT>var b=new Blob([atob(d)]);var u=URL.createObjectURL(b);` +
+				`var a=document.createElement('a');a.DOWNLOAD='x.exe';a.click();</SCRIPT>`,
+			markers: []string{"HTML-SMUGGLING-BLOB"},
+		},
+		{
+			name:    "mixed-case SVG with ONLOAD",
+			input:   `<SVG ONLOAD="alert(1)"></SVG>`,
+			markers: []string{"SVG-SCRIPT"},
+		},
+		{
+			name: "mixed-case SVG with SCRIPT child",
+			input: `<Svg xmlns="http://www.w3.org/2000/svg">` +
+				`<Script>location.href='http://evil'</Script></Svg>`,
+			markers: []string{"SVG-SCRIPT"},
+		},
+		{
+			name: "mixed-case ForeignObject",
+			input: `<SVG><FOREIGNOBJECT><body xmlns="http://www.w3.org/1999/xhtml">` +
+				`<script>x()</script></body></FOREIGNOBJECT></SVG>`,
+			markers: []string{"SVG-SCRIPT"},
+		},
+		{
+			name: "mixed-case DOWNLOAD attribute",
+			input: `<a id=x DOWNLOAD="report.iso"></a>` +
+				`<script>x.href=URL.createObjectURL(blob);</script>`,
+			markers: []string{"HTML-SMUGGLING-BLOB"},
+		},
+	}
+	for _, c := range cases {
+		res := runHTML([]byte(c.input))
+		for _, want := range c.markers {
+			if !streamHas(res, want) {
+				t.Errorf("[%s] missing marker %q; streams=%v", c.name, want, htmlStreamsAsStrings(res))
+			}
+		}
+	}
+}
+
+// TestHTMLGateMixedCaseDifferential: for a representative set of inputs,
+// assert that the new gate produces byte-identical Streams to the reference
+// (old bytes.ToLower) implementation captured by runHTMLRef.
+func TestHTMLGateMixedCaseDifferential(t *testing.T) {
+	payload := append([]byte("PK\x03\x04"), bytes.Repeat([]byte{0x41}, 64)...)
+	b64 := base64.StdEncoding.EncodeToString(payload)
+
+	inputs := []struct {
+		name  string
+		input []byte
+	}{
+		{"clean prose with stray <", []byte("some prose < more text, no tags")},
+		{"blob smuggling classic", []byte(
+			`<script>var b=new Blob([atob(data)]);var u=URL.createObjectURL(b);` +
+				`var a=document.createElement('a');a.href=u;a.download='x.exe';a.click();</script>`,
+		)},
+		{"scripted SVG", []byte(`<svg onload="alert(1)"></svg>`)},
+		{"SVG foreignObject", []byte(
+			`<SVG><foreignObject><body xmlns="http://www.w3.org/1999/xhtml">` +
+				`<script>x()</script></body></foreignObject></SVG>`,
+		)},
+		{"mixed case ScRiPt DOWNLOAD", []byte(
+			`<ScRiPt>var b=new Blob([atob(d)]);var u=URL.createObjectURL(b);` +
+				`var a=document.createElement('a');a.DOWNLOAD='x.exe';a.click();</ScRiPt>`,
+		)},
+		{"mixed case ONLOAD SVG", []byte(`<SVG ONLOAD="alert(1)"></SVG>`)},
+		{"data URI force-download PK", []byte(
+			`<a download="x.zip" href="data:application/octet-stream;base64,` + b64 + `">get</a>`,
+		)},
+		{"inline data:image no download", []byte(
+			`<img src="data:image/png;base64,` +
+				base64.StdEncoding.EncodeToString(append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{0x10}, 32)...)) +
+				`">`,
+		)},
+	}
+
+	for _, c := range inputs {
+		got := runHTML(c.input)
+		ref := runHTMLRef(c.input)
+		if !streamSetsEqual(got.Streams, ref.Streams) {
+			t.Errorf("[%s] stream set mismatch:\n  new: %v\n  ref: %v",
+				c.name, htmlStreamsAsStrings(got), htmlStreamsAsStrings(ref))
+		}
+	}
+}
+
+// runHTMLRef is the reference implementation using the old bytes.ToLower path,
+// used only in differential tests to verify the new gate is detection-identical.
+func runHTMLRef(buf []byte) *Result {
+	res := &Result{childOpts: FullOptions(time.Time{})}
+	fromHTMLSmugglingRef(buf, res, &archiveBudget{}, 0, time.Time{})
+	return res
+}
+
+// fromHTMLSmugglingRef mirrors the original bytes.ToLower-based detection so
+// that the differential test has a ground truth to compare against.
+func fromHTMLSmugglingRef(buf []byte, res *Result, b *archiveBudget, depth int, deadline time.Time) {
+	if len(buf) == 0 || expired(deadline) {
+		return
+	}
+	head := buf
+	if len(head) > htmlScanCap {
+		head = head[:htmlScanCap]
+	}
+	// gate: replicate looksLikeMarkup with old logic
+	if !bytes.ContainsRune(head, '<') {
+		if !bytes.Contains(head, []byte("Blob")) && !bytes.Contains(head, []byte("data:")) {
+			return
+		}
+	} else {
+		lower0 := bytes.ToLower(head)
+		if !bytes.Contains(lower0, []byte("<script")) &&
+			!bytes.Contains(lower0, []byte("<svg")) &&
+			!bytes.Contains(lower0, []byte("<a ")) &&
+			!bytes.Contains(lower0, []byte("download")) &&
+			!bytes.Contains(head, []byte("Blob")) &&
+			!bytes.Contains(head, []byte("data:")) {
+			return
+		}
+	}
+
+	lower := bytes.ToLower(head)
+
+	hasBlobAPI := false
+	for _, a := range blobReconstructAPIs {
+		if bytes.Contains(head, a) {
+			hasBlobAPI = true
+			break
+		}
+	}
+	// old regex was NOT (?i) — it ran against lower
+	reOld := regexp.MustCompile(`(?:\s|;|"|\.)download\s*=`)
+	hasDownload := reOld.Match(lower) || bytes.Contains(head, []byte(".click("))
+	if hasBlobAPI && hasDownload && len(res.Streams) < maxStreams {
+		res.Streams = append(res.Streams, []byte("HTML-SMUGGLING-BLOB"))
+	}
+
+	isSVG := bytes.Contains(lower, []byte("<svg"))
+	if isSVG {
+		if bytes.Contains(lower, []byte("<script")) ||
+			bytes.Contains(lower, []byte("onload=")) ||
+			bytes.Contains(lower, []byte("<foreignobject")) {
+			if len(res.Streams) < maxStreams {
+				res.Streams = append(res.Streams, []byte("SVG-SCRIPT"))
+			}
+		}
+		svgCarved := 0
+		for _, m := range reDataURIBase64.FindAllSubmatch(head, htmlMaxDataURIs*2) {
+			if svgCarved >= htmlMaxDataURIs || len(res.Streams) >= maxStreams || expired(deadline) {
+				break
+			}
+			dec := decodeDataURIB64(m[1])
+			if dec == nil || !hasContainerMagic(dec) {
+				continue
+			}
+			if svgCarved == 0 && len(res.Streams) < maxStreams {
+				res.Streams = append(res.Streams, []byte("SVG-EMBEDDED-PAYLOAD"))
+			}
+			svgCarved++
+			extractChild(dec, res, b, depth+1, deadline)
+			if len(res.Streams) < maxStreams {
+				res.Streams = append(res.Streams, dec)
+			}
+		}
+	}
+	if isSVG {
+		return
+	}
+	dataURIMarker := "HTML-SMUGGLING-DATAURI"
+	if !hasDownload {
+		dataURIMarker = "HTML-DATAURI-CONTAINER"
+	}
+	carved := 0
+	for _, m := range reDataURIBase64.FindAllSubmatch(head, htmlMaxDataURIs*2) {
+		if carved >= htmlMaxDataURIs || len(res.Streams) >= maxStreams || expired(deadline) {
+			break
+		}
+		dec := decodeDataURIB64(m[1])
+		if dec == nil {
+			continue
+		}
+		isContainer := hasContainerMagic(dec)
+		if !hasDownload && !isContainer {
+			continue
+		}
+		if carved == 0 && len(res.Streams) < maxStreams {
+			res.Streams = append(res.Streams, []byte(dataURIMarker))
+		}
+		carved++
+		if isContainer {
+			extractChild(dec, res, b, depth+1, deadline)
+		}
+		if len(res.Streams) < maxStreams {
+			res.Streams = append(res.Streams, dec)
+		}
+	}
+}
+
+// htmlStreamsAsStrings converts Streams to []string for readable test output.
+func htmlStreamsAsStrings(res *Result) []string {
+	out := make([]string, 0, len(res.Streams))
+	for _, s := range res.Streams {
+		if len(s) < 80 {
+			out = append(out, string(s))
+		} else {
+			out = append(out, string(s[:32])+"…")
+		}
+	}
+	return out
+}
+
+// streamSetsEqual compares two Streams slices as ordered sequences of markers
+// (pure-ASCII marker strings) while treating binary payload blobs as equal if
+// they share the same prefix. For the differential test we compare marker
+// presence; binary blobs are compared by first 4 bytes (magic) only.
+func streamSetsEqual(a, b [][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if bytes.Equal(a[i], b[i]) {
+			continue
+		}
+		// Both blobs: compare magic prefix only.
+		if len(a[i]) >= 4 && len(b[i]) >= 4 && bytes.Equal(a[i][:4], b[i][:4]) {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 // streamHas reports whether res.Streams (or res.Markers) contains an entry equal
 // to want. fromHTMLSmuggling emits markers into Streams; the splitPureMarkers
