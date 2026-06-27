@@ -166,6 +166,42 @@ func TestFeedDedupStreamIdenticalToBuf(t *testing.T) {
 	}
 }
 
+// TestFeedLazyMapsCleanBuffer (PERF-37): the per-feed dedup maps (seenURL/seenTF/
+// seenFD) are now allocated lazily on the first hit. A feed-ENABLED scanner run
+// over a buffer that yields no malware URL must still complete cleanly and produce
+// zero feed matches — proving the nil-map dedup reads are safe (no allocation, no
+// panic) when there is never a hit, the overwhelming common case.
+func TestFeedLazyMapsCleanBuffer(t *testing.T) {
+	s := newURLhausScanner(t)
+	defer s.Close()
+
+	clean := []byte("a perfectly innocent message with no malware url at all")
+	matches, err := scanT(s, clean, ScanMeta{})
+	if err != nil {
+		t.Fatalf("scan clean (feed enabled): %v", err)
+	}
+	if fm := feedMatches(matches); len(fm) != 0 {
+		t.Errorf("clean buffer produced %d feed matches, want 0: %+v", len(fm), fm)
+	}
+
+	// A subsequent hit on the SAME scanner must still match + dedup, proving the
+	// lazy make() on first hit works after a clean (nil-map) run.
+	hit := []byte(feedURLBody)
+	hm := feedMatches(mustScan(t, s, hit))
+	if len(hm) != 1 {
+		t.Errorf("hit after clean run: got %d feed matches, want 1: %+v", len(hm), hm)
+	}
+}
+
+func mustScan(t *testing.T, s *Scanner, buf []byte) []Match {
+	t.Helper()
+	m, err := scanT(s, buf, ScanMeta{})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	return m
+}
+
 // TestFeedDedupDistinctStreams (PERF-33): distinct ZIP members each with a
 // distinct feed URL → both matched, in first-occurrence order.
 func TestFeedDedupDistinctStreams(t *testing.T) {

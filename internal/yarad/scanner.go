@@ -1473,16 +1473,12 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 			maxN = s.threatfoxMax
 		}
 
+		// PERF-37: the per-feed dedup maps are allocated lazily on the FIRST hit, not
+		// upfront. A clean message (no malware URL anywhere — the overwhelming common
+		// case) produces no hit, so these stay nil and cost zero allocations. Reads of
+		// a nil map are safe in Go (`_, dup := seen[k]` on nil → dup=false), so the
+		// dedup check works before the first hit forces the make().
 		var seenURL, seenTF, seenFD map[string]struct{}
-		if s.urlhaus != nil {
-			seenURL = make(map[string]struct{})
-		}
-		if s.threatfox != nil {
-			seenTF = make(map[string]struct{})
-		}
-		if s.feodo != nil {
-			seenFD = make(map[string]struct{})
-		}
 
 		// addFeedHits extracts URL candidates from b once and fans to all enabled
 		// checkers. URLhaus: check the raw message and every decompressed
@@ -1498,6 +1494,9 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 					if _, dup := seenURL[h.URL]; dup {
 						continue
 					}
+					if seenURL == nil {
+						seenURL = make(map[string]struct{})
+					}
 					seenURL[h.URL] = struct{}{}
 					out = append(out, Match{Rule: h.Rule(), Tags: []string{"urlhaus"}, Meta: map[string]string{"url": h.URL}})
 				}
@@ -1508,6 +1507,9 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 					if _, dup := seenTF[h.URL]; dup {
 						continue
 					}
+					if seenTF == nil {
+						seenTF = make(map[string]struct{})
+					}
 					seenTF[h.URL] = struct{}{}
 					out = append(out, Match{Rule: h.Rule(), Tags: []string{"threatfox"}, Meta: map[string]string{"url": h.URL}})
 				}
@@ -1517,6 +1519,9 @@ func (s *Scanner) Scan(buf []byte, meta ScanMeta) ([]Match, error) {
 				for _, h := range s.feodo.CheckCandidates(cands, s.urlhausMax) {
 					if _, dup := seenFD[h.URL]; dup {
 						continue
+					}
+					if seenFD == nil {
+						seenFD = make(map[string]struct{})
 					}
 					seenFD[h.URL] = struct{}{}
 					out = append(out, Match{Rule: h.Rule(), Tags: []string{"feodo"}, Meta: map[string]string{"url": h.URL, "ip": h.IP}})
