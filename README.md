@@ -591,6 +591,31 @@ When `YARAD_ICAP_ADDR` is set, three additional counters appear in `/metrics`:
 - `yarad_icap_infected_total` — requests with ≥1 rule match (403 sent)
 - `yarad_icap_options_total` — OPTIONS requests served
 
+## Observability (Grafana + Prometheus)
+
+`/metrics` is Prometheus exposition format (counters + gauges, no auth unless
+`YARAD_METRICS_AUTH=1`). Ready-to-import artifacts live in
+[`deploy/`](deploy/):
+
+- **[`deploy/grafana/yarad-dashboard.json`](deploy/grafana/yarad-dashboard.json)**
+  — a dashboard with the request path (scans/matches/errors/busy), cache hit
+  ratio, libyara scan channels (raw/stream/marker/bigfile), extraction by
+  carrier, rule reloads, ruleset age/staleness, abuse.ch feed lookups/hits, and
+  the auto effort level. Import it and pick your Prometheus datasource.
+- **[`deploy/prometheus/yarad-alerts.yml`](deploy/prometheus/yarad-alerts.yml)**
+  — alert rules: daemon down, zero rules loaded, stale ruleset, reload failing,
+  high scan-error / busy rate, feed-refresh failures. Reference it from
+  `rule_files:` in `prometheus.yml`.
+
+Minimal scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: yarad
+    static_configs:
+      - targets: ['yarad:8079']
+```
+
 ## Wiring it into rspamd
 
 The [`rspamd/`](rspamd/) directory has everything the rspamd side needs:

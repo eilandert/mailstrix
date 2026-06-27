@@ -1,0 +1,83 @@
+# Prometheus alerting rules for yarad. Load via rule_files: in prometheus.yml.
+# Metric names match yarad's /metrics exposition (see internal/yarad/server.go).
+# Scrape config (add to prometheus.yml):
+#   - job_name: yarad
+#     static_configs: [{ targets: ['yarad:8079'] }]
+#   (set YARAD_METRICS_AUTH=0, or add authorization: with the token.)
+groups:
+  - name: yarad
+    rules:
+      # --- availability ---
+      - alert: YaradDown
+        expr: up{job="yarad"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "yarad target {{ $labels.instance }} is down"
+          description: "Prometheus cannot scrape yarad for >2m. Mail malware scanning is offline."
+
+      - alert: YaradNoRulesLoaded
+        expr: yarad_rules == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "yarad has zero rules loaded"
+          description: "yarad_rules=0 — the daemon is up but scanning nothing. Rule load/compile failed."
+
+      # --- rule freshness (catches a silently-broken daily rebuild) ---
+      - alert: YaradRulesStale
+        expr: yarad_rules_stale == 1
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "yarad ruleset is stale"
+          description: "Loaded ruleset age exceeds YARAD_RULES_MAX_AGE. The daily fetch/rebuild likely stopped updating."
+
+      - alert: YaradReloadFailing
+        expr: increase(yarad_reload_failure_total[1h]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "yarad rule reload failed"
+          description: "A SIGHUP/boot reload failed to compile in the last hour; the previous rule set is kept."
+
+      # --- health of the scan path ---
+      - alert: YaradHighScanErrorRate
+        expr: |
+          sum(rate(yarad_errors_total[5m]))
+            / clamp_min(sum(rate(yarad_scans_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "yarad scan error rate >5%"
+          description: "Over 5% of /scan requests are erroring (scan/read/length). Check libyara timeouts and rule health."
+
+      - alert: YaradRawScanErrors
+        expr: increase(yarad_raw_scan_errs_total[10m]) > 0
+        for: 0m
+        labels: { severity: info }
+        annotations:
+          summary: "yarad raw scans falling through to extraction"
+          description: "Raw libyara scans are timing out/erroring and falling back to extraction — possible rule/perf regression."
+
+      # --- backpressure / capacity ---
+      - alert: YaradHighBusyRate
+        expr: |
+          sum(rate(yarad_busy_total[5m]))
+            / clamp_min(sum(rate(yarad_scans_total[5m]) + rate(yarad_busy_total[5m])), 0.001) > 0.10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "yarad rejecting >10% of requests (concurrency gate)"
+          description: "The admission gate is shedding load. Raise YARAD_MAX_INFLIGHT, scale out, or lower effort."
+
+      # --- feed freshness (only meaningful when the feed is enabled) ---
+      - alert: YaradFeedRefreshFailing
+        expr: |
+          increase(yarad_urlhaus_refresh_failures_total[2h]) > 0
+            or increase(yarad_malwarebazaar_refresh_failures_total[2h]) > 0
+        for: 0m
+        labels: { severity: info }
+        annotations:
+          summary: "yarad abuse.ch feed refresh failing"
+          description: "An enabled abuse.ch feed (URLhaus/MalwareBazaar/…) has failed to refresh for 2h; lookups use stale data (fail-open)."
