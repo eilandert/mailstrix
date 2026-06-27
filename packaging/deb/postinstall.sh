@@ -17,7 +17,17 @@ fi
 
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload >/dev/null 2>&1 || true
+    # On an upgrade ($1 = configure <oldver>), restart the unit so the new
+    # binary takes over — but only if it was already active, so a fresh install
+    # stays stopped until the operator sets a token and enables it. try-restart
+    # is a no-op when the unit is not running.
+    if [ "$1" = configure ] && [ -n "$2" ]; then
+        systemctl try-restart yarad >/dev/null 2>&1 || true
+    fi
 fi
 
-echo "yarad installed. Fetch rules:  sudo -u yarad yarad fetch-rules -cache-dir /var/cache/yarad"
-echo "Set a token in /etc/yarad/yarad.env, then:  systemctl enable --now yarad"
+# First-time install ($2 empty) prints setup hints; an upgrade stays quiet.
+if [ -z "$2" ]; then
+    echo "yarad installed. Fetch rules:  sudo -u yarad yarad fetch-rules -cache-dir /var/cache/yarad"
+    echo "Set a token in /etc/yarad/yarad.env, then:  systemctl enable --now yarad"
+fi
