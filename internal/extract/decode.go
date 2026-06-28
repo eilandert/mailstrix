@@ -710,6 +710,26 @@ func fromEncoded(buf []byte, res *Result, opts *Options) {
 		u16Cum += len(u8)
 		total++
 	}
+	// PERF-39: dedup sources by content before the defang+BFS loops.
+	// After the UTF-16 loop above, sources may contain byte-identical slices
+	// (e.g. two VBA streams with the same body). Processing duplicates is pure
+	// wasted CPU: the BFS would emit the same decoded blobs twice, and the scanner
+	// deduplicates the output anyway. We collapse them here — first occurrence wins,
+	// order preserved — so each distinct content is decoded exactly once.
+	// Fast path: skip the map entirely when there is at most one source.
+	if len(sources) > 1 {
+		seen := make(map[uint64]struct{}, len(sources))
+		dst := sources[:0]
+		for _, s := range sources {
+			k := fnv64(s)
+			if _, dup := seen[k]; !dup {
+				seen[k] = struct{}{}
+				dst = append(dst, s)
+			}
+		}
+		sources = dst
+	}
+
 	// MSD-4 budget: the ingest-time defang emits one extra stream per source
 	// outside decodeSourceTree's own per-source budget, so it needs its own caps
 	// — otherwise N defanged sources × up to 1 MiB each would bypass the
