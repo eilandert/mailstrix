@@ -593,6 +593,9 @@ func aesCBCDecrypt(data, key, iv []byte) []byte {
 	if err != nil {
 		return nil
 	}
+	if len(iv) != aes.BlockSize {
+		return nil
+	}
 	if len(data) < aes.BlockSize {
 		return nil
 	}

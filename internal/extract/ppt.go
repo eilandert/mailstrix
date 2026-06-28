@@ -134,24 +134,10 @@ func pptExtractEOS(body []byte, inst uint16, res *Result, deadline time.Time) {
 		oleBytes = body
 
 	case 1:
-		// zlib-compressed with a 4-byte LE decompressed-size prefix.
-		// The prefix is attacker-controlled; do NOT pre-allocate from it.
-		// Use io.LimitReader to cap decompressed output to maxBytesPerModule.
-		if len(body) < 4 {
+		oleBytes = inflatePPTCompressedEOS(body)
+		if len(oleBytes) == 0 {
 			return
 		}
-		compressed := body[4:] // skip the 4-byte declared-size prefix
-		zr, err := zlib.NewReader(io.LimitReader(bytes.NewReader(compressed), maxBytesPerModule))
-		if err != nil {
-			return
-		}
-		buf, readErr := io.ReadAll(zr)
-		_ = zr.Close() // #nosec G104 — any decompressor error is already surfaced in readErr; zlib.Reader.Close at this point returns the same error or nil
-		if readErr != nil && len(buf) == 0 {
-			return
-		}
-		// Partial decompression accepted (fail-open): oleparse.NewOLEFile will reject a corrupt blob.
-		oleBytes = buf
 
 	default:
 		return // unknown instance value — skip
@@ -173,4 +159,24 @@ func pptExtractEOS(body []byte, inst uint16, res *Result, deadline time.Time) {
 
 	res.Streams = codes(res, mods, res.Streams)
 	detectStomping(subOLE, res, deadline)
+}
+
+func inflatePPTCompressedEOS(body []byte) []byte {
+	// zlib-compressed with a 4-byte LE decompressed-size prefix.
+	// The prefix is attacker-controlled; do NOT pre-allocate from it.
+	if len(body) < 4 {
+		return nil
+	}
+	compressed := body[4:] // skip the 4-byte declared-size prefix
+	zr, err := zlib.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil
+	}
+	buf, readErr := io.ReadAll(io.LimitReader(zr, maxBytesPerModule))
+	_ = zr.Close() // #nosec G104 — any decompressor error is already surfaced in readErr; zlib.Reader.Close at this point returns the same error or nil
+	if readErr != nil && len(buf) == 0 {
+		return nil
+	}
+	// Partial decompression accepted (fail-open): oleparse.NewOLEFile will reject a corrupt blob.
+	return buf
 }

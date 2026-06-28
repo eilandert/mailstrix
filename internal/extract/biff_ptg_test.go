@@ -247,6 +247,14 @@ func TestBIFF8PtgAttrChooseSkip(t *testing.T) {
 	}
 }
 
+func TestBIFF8PtgAttrTruncatedFailOpen(t *testing.T) {
+	stream := ptgStr8("before")
+	stream = append(stream, ptgAttr, 0x04, 0x02) // missing second w byte
+	if got := parseBIFF8Formula(stream); got != "before" {
+		t.Fatalf("truncated ptgAttr: got %q, want before", got)
+	}
+}
+
 func TestBIFF8ClassVariantsNormalize(t *testing.T) {
 	// ptgFuncV (0x41) must dispatch as ptgFunc.
 	stream := append(ptgStr8("calc"), 0x41, 110, 0) // EXEC, value-class

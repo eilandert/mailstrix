@@ -113,6 +113,23 @@ func TestPPTVBA_ZlibValidButNotOLE(t *testing.T) {
 	}
 }
 
+func TestPPTVBA_ZlibOutputCapped(t *testing.T) {
+	raw := bytes.Repeat([]byte("A"), maxBytesPerModule+1024)
+	var zbuf bytes.Buffer
+	zw := zlib.NewWriter(&zbuf)
+	_, _ = zw.Write(raw)
+	_ = zw.Close()
+
+	body := make([]byte, 4+zbuf.Len())
+	binary.LittleEndian.PutUint32(body[0:], uint32(len(raw)))
+	copy(body[4:], zbuf.Bytes())
+
+	got := inflatePPTCompressedEOS(body)
+	if len(got) != maxBytesPerModule {
+		t.Fatalf("decompressed EOS length = %d, want cap %d", len(got), maxBytesPerModule)
+	}
+}
+
 func TestPPTVBA_DeadlineExpired(t *testing.T) {
 	// Expired deadline → fromPPTVBA returns immediately, no panic.
 	buf := buildCFB(t, []cfbEntry{

@@ -522,6 +522,17 @@ func TestStandardMakeKey_WrongPasswordDiffers(t *testing.T) {
 	}
 }
 
+func TestAESCBCDecryptRejectsBadIVLength(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("aesCBCDecrypt panicked on malformed IV: %v", r)
+		}
+	}()
+	if got := aesCBCDecrypt(make([]byte, 16), make([]byte, 16), []byte{1, 2, 3}); got != nil {
+		t.Fatalf("aesCBCDecrypt returned %d bytes for malformed IV, want nil", len(got))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // B2 — Nil/deadline guards
 // ---------------------------------------------------------------------------

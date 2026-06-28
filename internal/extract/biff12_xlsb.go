@@ -491,8 +491,7 @@ func parseBIFF12Formula(data []byte) string {
 				return joinStack(stack)
 			}
 			funcID := uint16(data[pos+1]) | uint16(data[pos+2])<<8
-			arg := popStack(&stack)
-			push(wrapFunc(funcID, arg))
+			push(wrapFunc(funcID, popBIFFFuncArgs(&stack, funcID)))
 			pos += 3
 
 		case ptgFuncVar:
@@ -572,7 +571,12 @@ func parseBIFF12Formula(data []byte) string {
 			push("")
 
 		case ptgAttr:
-			return joinStack(stack)
+			next, ok := skipBIFFPtgAttr(data, pos)
+			if !ok {
+				return joinStack(stack)
+			}
+			pos = next
+			continue
 
 		default:
 			return joinStack(stack)

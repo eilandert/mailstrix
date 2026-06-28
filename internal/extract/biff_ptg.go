@@ -280,16 +280,7 @@ func parseBIFF8Formula(data []byte) string {
 			// its operands or the surrounding =EXEC(…)/concat under-pops and the
 			// fold garbles. Unknown ids fall back to a single pop (never
 			// over-pops past a deeper, unrelated operand).
-			arity := 1
-			if a, ok := biffFuncArity[funcID]; ok {
-				arity = a
-			}
-			args := make([]string, 0, arity)
-			for i := 0; i < arity; i++ {
-				args = append(args, popStack(&stack))
-			}
-			reverse(args) // popped most-recent-first; restore source order
-			push(wrapFunc(funcID, strings.Join(args, ",")))
+			push(wrapFunc(funcID, popBIFFFuncArgs(&stack, funcID)))
 			pos += 3
 
 		case ptgFuncVar:
@@ -371,34 +362,11 @@ func parseBIFF8Formula(data []byte) string {
 			push("")
 
 		case ptgAttr:
-			// Control attribute (MS-XLS 2.5.198.3): 1-byte grbit + 2-byte param.
-			// bitAttrChoose (0x04): the param is the count of CHOOSE cases minus
-			// one; it is followed by (count+1)*2 bytes of branch offsets. Skip the
-			// whole variable-length record so parsing continues past a CHOOSE jump
-			// table instead of bailing (prior code returned here). Other grbit
-			// values (Semi, If, Sum, Assign, Space, Space_Semi) carry exactly 2
-			// payload bytes and are safe to skip the same way via the else branch.
-			// Bounded: the offset table can be at most (65535+1)*2 ≈ 128 KiB;
-			// realistically CHOOSE has ≤ 30 cases (Excel UI cap 254), so skip cost
-			// is tiny. Fail-open on a truncated token.
-			if pos+1 >= len(data) {
+			next, ok := skipBIFFPtgAttr(data, pos)
+			if !ok {
 				return joinStack(stack)
 			}
-			grbit := data[pos+1]
-			// The 2-byte field after grbit is little-endian.
-			if pos+3 > len(data) {
-				return joinStack(stack)
-			}
-			skip := 4 // opcode(1) + grbit(1) + w(2)
-			if grbit&0x04 != 0 {
-				// bitAttrChoose: w = num_cases - 1; table is (w+1)*2 bytes.
-				w := int(binary.LittleEndian.Uint16(data[pos+2:]))
-				skip += (w + 1) * 2
-			}
-			if pos+skip > len(data) {
-				return joinStack(stack)
-			}
-			pos += skip
+			pos = next
 			continue
 
 		default:
@@ -409,6 +377,37 @@ func parseBIFF8Formula(data []byte) string {
 	}
 
 	return joinStack(stack)
+}
+
+func popBIFFFuncArgs(stack *[]string, funcID uint16) string {
+	arity := 1
+	if a, ok := biffFuncArity[funcID]; ok {
+		arity = a
+	}
+	args := make([]string, 0, arity)
+	for i := 0; i < arity; i++ {
+		args = append(args, popStack(stack))
+	}
+	reverse(args) // popped most-recent-first; restore source order
+	return strings.Join(args, ",")
+}
+
+func skipBIFFPtgAttr(data []byte, pos int) (int, bool) {
+	// Control attribute (MS-XLS 2.5.198.3): 1-byte grbit + 2-byte param.
+	// bitAttrChoose (0x04): the param is the count of CHOOSE cases minus one; it
+	// is followed by (count+1)*2 bytes of branch offsets.
+	if pos+4 > len(data) {
+		return pos, false
+	}
+	skip := 4 // opcode(1) + grbit(1) + w(2)
+	if data[pos+1]&0x04 != 0 {
+		w := int(binary.LittleEndian.Uint16(data[pos+2:]))
+		skip += (w + 1) * 2
+	}
+	if pos+skip > len(data) {
+		return pos, false
+	}
+	return pos + skip, true
 }
 
 // normalizePtg maps the value-class (0x40) and array-class (0x60) variants of

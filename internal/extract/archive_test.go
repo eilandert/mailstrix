@@ -504,6 +504,16 @@ func TestOfficeZipSiblingPECarrier(t *testing.T) {
 	if res.Failed {
 		t.Errorf("office zip with PE sibling unexpectedly Failed: %+v", res)
 	}
+	found := false
+	for _, s := range res.Streams {
+		if bytes.Equal(s, minimalPE()) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("office zip PE sibling was not surfaced as a stream; streams=%d", len(res.Streams))
+	}
 }
 
 // TestOfficeZipCleanNoBodyDump is the no-FP guard: a clean Office zip whose only

@@ -173,6 +173,7 @@ func fromOfficeZipCarriers(buf []byte, res *Result, b *archiveBudget, depth int,
 		}
 		b.members++
 		b.total += len(data)
+		res.Streams = append(res.Streams, data)
 		extractChild(data, res, b, depth+1, deadline)
 	}
 }

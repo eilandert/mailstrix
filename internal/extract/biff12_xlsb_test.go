@@ -73,6 +73,46 @@ func TestParseBIFF12Formula_ExecFuncVar(t *testing.T) {
 	}
 }
 
+func TestParseBIFF12Formula_FixedArityMID(t *testing.T) {
+	rgce := strPtg("calc.exe")
+	rgce = append(rgce, ptgIntTok(1)...)
+	rgce = append(rgce, ptgIntTok(8)...)
+	rgce = append(rgce, ptgFuncTok(31)...)
+	if got := parseBIFF12Formula(rgce); got != "FUNC_1f(calc.exe,1,8)" {
+		t.Fatalf("BIFF12 MID arity: got %q, want FUNC_1f(calc.exe,1,8)", got)
+	}
+}
+
+func TestParseBIFF12Formula_PtgAttrChooseSkip(t *testing.T) {
+	rgce := strPtg("func")
+	rgce = append(rgce, ptgAttr, 0x04, 0x02, 0x00)
+	rgce = append(rgce, 0x00, 0x00, 0x04, 0x00, 0x08, 0x00)
+	rgce = append(rgce, strPtg("result")...)
+	if got := parseBIFF12Formula(rgce); got != "funcresult" {
+		t.Fatalf("BIFF12 ptgAttrChoose skip: got %q, want funcresult", got)
+	}
+}
+
+func TestParseBIFF8FormulaWithRefs_FixedArityMID(t *testing.T) {
+	stream := ptgStr8("calc.exe")
+	stream = append(stream, ptgIntTok(1)...)
+	stream = append(stream, ptgIntTok(8)...)
+	stream = append(stream, ptgFuncTok(31)...)
+	if got := parseBIFF8FormulaWithRefs(stream); got != "FUNC_1f(calc.exe,1,8)" {
+		t.Fatalf("BIFF8 WithRefs MID arity: got %q, want FUNC_1f(calc.exe,1,8)", got)
+	}
+}
+
+func TestParseBIFF12FormulaWithRefs_FixedArityMID(t *testing.T) {
+	rgce := strPtg("calc.exe")
+	rgce = append(rgce, ptgIntTok(1)...)
+	rgce = append(rgce, ptgIntTok(8)...)
+	rgce = append(rgce, ptgFuncTok(31)...)
+	if got := parseBIFF12FormulaWithRefs(rgce); got != "FUNC_1f(calc.exe,1,8)" {
+		t.Fatalf("BIFF12 WithRefs MID arity: got %q, want FUNC_1f(calc.exe,1,8)", got)
+	}
+}
+
 func TestParseBIFF12Formula_FailOpenTruncated(t *testing.T) {
 	// charcount says 5 but no bytes follow → fold-what-we-have, no panic.
 	rgce := []byte{ptgStr, 0x05, 0x00}
