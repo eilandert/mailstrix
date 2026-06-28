@@ -733,6 +733,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 - [x] Distroless, non-root, read-only rootfs (~89 MB)
 - [x] **ICAP server** (RFC 3507) — optional `YARAD_ICAP_ADDR` listener; REQMOD+RESPMOD; shares engine, cache, and concurrency gate with `/scan`; ISTag tracks ruleset fingerprint; fail-open on scan error; `icap_*` Prometheus counters
 - [x] **Batch echo-redirect dropper carving** — reconstructs VBS/JS/PS1 payloads hidden inside `.bat` echo-redirect droppers (`>"FILE" ( echo … )` / `>>"FILE" echo …`) so existing script keyword rules reach the plaintext; caret-escape unescaping; shared budget/depth bounds; self-gating prefilter (no cost on non-batch input)
+- [x] **JAR / APK member unpacking** — a zip carrying only `META-INF/MANIFEST.MF` (Java `.jar` / Android `.apk`: Adwind/jRAT/STRRAT mail vectors) is now member-unpacked as a plain archive, so its `.class`/`.dex`/nested-jar payloads are scanned instead of being mistaken for an Office document and routed to the macro path; genuine OOXML/ODF (which always carry `[Content_Types].xml`/`mimetype`/`word|xl|ppt/`) are unaffected — zero body-text FP
 
 ### Planned
 
@@ -768,6 +769,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 - [ ] **TLSH fuzzy hashing** — `glaslos/tlsh` + MalwareBazaar `get_tlsh` family lookup (distance <30 = same family); needs a labelled corpus to FP-tune
 - [ ] **FP auto-tuning** — derive the empirical rule denylist from the rspamd ham corpus instead of the 3 hand-curated entries
 - [x] ~~Batch `.bat` echo-redirect dropper carving~~ — shipped (see above)
+- [x] ~~JAR / APK member unpacking (`META-INF/`-only zip no longer mis-classified as Office)~~ — shipped (see above)
 - [ ] CHM / MSIX extraction; `.url`/`.settingcontent-ms` launcher fields
 - [ ] Shared-formula (`SHRFMLA`) resolution wired into the XLM emulator
 - [ ] Sample-gated legacy XLM/BIFF edge cases (CSV-DDE-XLSB `sbt=1`, per-funcid `ptgFunc` arity, BIFF CONTINUE reassembly)

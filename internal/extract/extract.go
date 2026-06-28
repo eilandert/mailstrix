@@ -37,7 +37,7 @@ import (
 // oleparse upgrade that changes output) invalidates cached verdicts the same
 // way a rule-set change does — important for the shared Redis L2 that survives
 // an image rebuild. Bump it whenever the bytes Extract emits could change.
-const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra+htmlsmuggle+encarchive+polyglot+xll+htmlnested+encarchivehdr+onenoterec+rtfcfbole+fmtcaplocal+csvquote+nestedooxmlopts+ddeparts+oleidorder+utf16decode+vbastream+officesibling+mhtmlrel+svgpayload+fibenc+pptenc+b64pecarve+tnef+olemeta+htmldatauri+peanalyze+xlmfuncarity+biffcontinue+xlsbdde+vbsvarreplace+shrfmla+cabcarve+batcarve"
+const Version = "ole2+msi+vbe+msg+onenote+archive+olepkg+lnk+pdf+rtf+decode+tmplinj+dde+xlm+stomp+userform+docprops+strfold+rtftricks+xlmfold+strrev+environ+dridex+oleid+bounds+ole2link+pdfdeepen+msd+pdflex+nested+pdfendstr+pdffilter+defang+msdenc+msddeep+xlmbiff+xlsb+slk+xlminterp+oledir+oletimes+enctype+digsig+pdfendstr2+rtfquote+csvdde+effort4+xlmbinop+xlmdde+xlmname+dsf+defaultpw+defaultpwrc4+pptvba+xlmemul+xlmemulbiff+xlmemuldepth+oleid2+ddews+docsec+dcufpayload+xlmstack+oleextra+htmlsmuggle+encarchive+polyglot+xll+htmlnested+encarchivehdr+onenoterec+rtfcfbole+fmtcaplocal+csvquote+nestedooxmlopts+ddeparts+oleidorder+utf16decode+vbastream+officesibling+mhtmlrel+svgpayload+fibenc+pptenc+b64pecarve+tnef+olemeta+htmldatauri+peanalyze+xlmfuncarity+biffcontinue+xlsbdde+vbsvarreplace+shrfmla+cabcarve+batcarve+jarunpack"
 
 // Options carries the per-request extraction caps (EFFORT-4) plus the time
 // budget. It is resolved once per scan from the effort level and threaded to the
@@ -891,7 +891,11 @@ func fromOOXML(buf []byte, res *Result, deadline time.Time, opts *Options) (offi
 		case "[Content_Types].xml", "mimetype":
 			officeZip = true
 		}
-		if !officeZip && isOfficePartName(f.Name) {
+		// Classification predicate (isOfficeClassPart, NOT isOfficePartName): a bare
+		// META-INF/ must not mark Office, else a Java .jar / Android .apk (which carry
+		// META-INF/MANIFEST.MF but no office root) would take the macro path and never
+		// have its .class / nested-jar payload members unpacked. Mirrors isOfficeZip.
+		if !officeZip && isOfficeClassPart(f.Name) {
 			officeZip = true
 		}
 		if officeZip {

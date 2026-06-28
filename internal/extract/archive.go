@@ -93,25 +93,42 @@ func isOfficeZip(buf []byte) bool {
 			return true
 		}
 		// OOXML part directories: a zip carrying these is an Office document even
-		// if (in a hand-built test fixture) the [Content_Types].xml is absent.
-		if isOfficePartName(f.Name) {
+		// if (in a hand-built test fixture) the [Content_Types].xml is absent. Use
+		// the CLASSIFICATION predicate (no bare META-INF/) so a Java .jar / Android
+		// .apk — which carry META-INF/MANIFEST.MF but NONE of the office roots — is
+		// NOT mistaken for an Office doc and is left to fromArchive member-unpacking.
+		if isOfficeClassPart(f.Name) {
 			return true
 		}
 	}
 	return false
 }
 
-// isOfficePartName reports whether a zip entry name is a structural OOXML part
+// isOfficePartName reports whether a zip entry name is a structural OOXML/ODF part
 // (a document body/metadata/relationship part), NOT an arbitrary attached file.
-// Used both to recognise an Office zip and to decide which members of an Office
-// zip are body parts (left to the macro path, never member-dumped → no body-text
-// FP) versus sibling files that should still be carrier-unpacked.
+// Used by fromOfficeZipCarriers to decide which members of an ALREADY-classified
+// Office zip are body parts (left to the macro path, never member-dumped → no
+// body-text FP) versus sibling files that should still be carrier-unpacked. It
+// includes META-INF/ (the ODF manifest / OOXML signature dir) — safe here because
+// the zip is already known to be Office.
 func isOfficePartName(n string) bool {
+	return isOfficeClassPart(n) || strings.HasPrefix(n, "META-INF/")
+}
+
+// isOfficeClassPart is the office-document CLASSIFICATION predicate: the part
+// names that, on their own, prove a zip is an OOXML/ODF document. It deliberately
+// EXCLUDES bare META-INF/ — that directory is shared with Java .jar and Android
+// .apk archives (META-INF/MANIFEST.MF), so classifying on it routed every JAR/APK
+// (a real Java-RAT mail vector: Adwind/jRAT/STRRAT) to the macro path instead of
+// archive member-unpacking, hiding its .class / nested-jar payloads. A genuine
+// ODF/OOXML doc always also carries mimetype / [Content_Types].xml / word|xl|ppt/,
+// so dropping META-INF/ here loses no real Office detection.
+func isOfficeClassPart(n string) bool {
 	return strings.HasPrefix(n, "word/") || strings.HasPrefix(n, "xl/") ||
 		strings.HasPrefix(n, "ppt/") || strings.HasPrefix(n, "visio/") ||
 		strings.HasPrefix(n, "customXml/") || strings.HasPrefix(n, "_rels/") ||
 		strings.HasPrefix(n, "docProps/") || n == "[Content_Types].xml" ||
-		n == "mimetype" || strings.HasPrefix(n, "META-INF/")
+		n == "mimetype"
 }
 
 // fromOfficeZipCarriers closes the spoofed-container gap: an Office-classified zip

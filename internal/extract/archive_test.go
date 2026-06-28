@@ -63,6 +63,77 @@ func TestExtractArchiveOfficeMemberNotPartDumped(t *testing.T) {
 	}
 }
 
+// TestExtractJarMembersUnpacked is the JAR/APK regression: a zip carrying
+// META-INF/MANIFEST.MF (the Java/Android marker) but NONE of the Office roots
+// must be treated as a PLAIN ARCHIVE and have its members unpacked — not routed
+// to the macro path (which would leave the .class / nested-jar payload unscanned).
+// This is the Adwind/jRAT/STRRAT mail vector. Before the isOfficeClassPart split,
+// the bare META-INF/ entry mis-classified the jar as an Office document.
+func TestExtractJarMembersUnpacked(t *testing.T) {
+	classPayload := []byte("\xCA\xFE\xBA\xBEUNIQUE_JAR_CLASS_PAYLOAD")
+	jar := buildZip(t, map[string][]byte{
+		"META-INF/MANIFEST.MF":   []byte("Manifest-Version: 1.0\r\nMain-Class: Evil\r\n"),
+		"Evil.class":             classPayload,
+		"com/evil/Dropper.class": []byte("\xCA\xFE\xBA\xBEsecond class"),
+	})
+
+	res := Extract(jar, time.Time{})
+	if !res.IsArchive {
+		t.Fatal("jar not flagged IsArchive — mis-classified as Office, members not unpacked")
+	}
+	found := false
+	for _, s := range res.Streams {
+		if bytes.Contains(s, []byte("UNIQUE_JAR_CLASS_PAYLOAD")) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("jar .class member was not surfaced as a stream (streams=%d)", len(res.Streams))
+	}
+}
+
+// TestIsOfficeZipClassification pins the classification predicate: a JAR/APK
+// (bare META-INF/, no office root) is NOT Office; a genuine OOXML (.docx) and ODF
+// (.odt via mimetype) document IS — so the macro-path FP guard still applies to
+// real documents while JAR/APK fall through to member-unpacking.
+func TestIsOfficeZipClassification(t *testing.T) {
+	jar := buildZip(t, map[string][]byte{
+		"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\r\n"),
+		"Evil.class":           []byte("\xCA\xFE\xBA\xBE"),
+	})
+	if isOfficeZip(jar) {
+		t.Fatal("jar (bare META-INF/) wrongly classified as Office")
+	}
+
+	docx := buildZip(t, map[string][]byte{
+		"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types/>`),
+		"word/document.xml":   []byte("<doc/>"),
+	})
+	if !isOfficeZip(docx) {
+		t.Fatal(".docx ([Content_Types].xml) not classified as Office")
+	}
+
+	// A docx-shaped fixture WITHOUT the root part but with a word/ part still
+	// classifies (hand-built-fixture allowance retained).
+	docxNoRoot := buildZip(t, map[string][]byte{
+		"word/document.xml": []byte("<doc/>"),
+		"_rels/.rels":       []byte("<Relationships/>"),
+	})
+	if !isOfficeZip(docxNoRoot) {
+		t.Fatal("word/ part fixture not classified as Office")
+	}
+
+	odt := buildZip(t, map[string][]byte{
+		"mimetype":              []byte("application/vnd.oasis.opendocument.text"),
+		"META-INF/manifest.xml": []byte("<manifest/>"),
+		"content.xml":           []byte("<office/>"),
+	})
+	if !isOfficeZip(odt) {
+		t.Fatal(".odt (mimetype) not classified as Office")
+	}
+}
+
 // buildZip builds an in-memory zip from name→data entries.
 func buildZip(t *testing.T, entries map[string][]byte) []byte {
 	t.Helper()
