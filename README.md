@@ -732,6 +732,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 - [x] Curated CAPEv2 family rules (Guloader/Formbook/AgentTesla/Obfuscar) as an 8th rule source; build-time `SLOW_RULE_DENYLIST` with a bundle guard (never unloads a shared multi-rule file)
 - [x] Distroless, non-root, read-only rootfs (~89 MB)
 - [x] **ICAP server** (RFC 3507) — optional `YARAD_ICAP_ADDR` listener; REQMOD+RESPMOD; shares engine, cache, and concurrency gate with `/scan`; ISTag tracks ruleset fingerprint; fail-open on scan error; `icap_*` Prometheus counters
+- [x] **Batch echo-redirect dropper carving** — reconstructs VBS/JS/PS1 payloads hidden inside `.bat` echo-redirect droppers (`>"FILE" ( echo … )` / `>>"FILE" echo …`) so existing script keyword rules reach the plaintext; caret-escape unescaping; shared budget/depth bounds; self-gating prefilter (no cost on non-batch input)
 
 ### Planned
 
@@ -766,7 +767,8 @@ sha256sum -c SHA256SUMS --ignore-missing
 - [ ] **Password-protected ZIP** — body/filename/wordlist password candidates → `yeka/zip` decrypt → YARA child scan (or a `malunpacker` ICAP sidecar); decision on path 1 vs 2 pending
 - [ ] **TLSH fuzzy hashing** — `glaslos/tlsh` + MalwareBazaar `get_tlsh` family lookup (distance <30 = same family); needs a labelled corpus to FP-tune
 - [ ] **FP auto-tuning** — derive the empirical rule denylist from the rspamd ham corpus instead of the 3 hand-curated entries
-- [ ] CHM / CAB / MSIX extraction; `.url`/`.settingcontent-ms` launcher fields
+- [x] ~~Batch `.bat` echo-redirect dropper carving~~ — shipped (see above)
+- [ ] CHM / MSIX extraction; `.url`/`.settingcontent-ms` launcher fields
 - [ ] Shared-formula (`SHRFMLA`) resolution wired into the XLM emulator
 - [ ] Sample-gated legacy XLM/BIFF edge cases (CSV-DDE-XLSB `sbt=1`, per-funcid `ptgFunc` arity, BIFF CONTINUE reassembly)
 

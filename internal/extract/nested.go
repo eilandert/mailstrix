@@ -105,5 +105,9 @@ func extractChild(data []byte, res *Result, b *archiveBudget, depth int, deadlin
 		// depth+1), so it is safe on arbitrary child bytes and bounded by the same
 		// shared budget/deadline as every other carrier.
 		fromHTMLSmuggling(data, res, b, depth, deadline)
+		// It may also be a Windows .bat echo-redirect dropper hiding a VBS/JS/PS1
+		// payload as a sequence of "echo LINE >>file" commands. Self-gating (cheap
+		// prefilter bails on non-batch text), bounded by the shared budget.
+		fromBatchDropper(data, res, b, depth, deadline)
 	}
 }
