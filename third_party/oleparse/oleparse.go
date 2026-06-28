@@ -129,7 +129,8 @@ type OLEFile struct {
 	// streamCache is a bounded cache of materialised stream bytes keyed by
 	// Directory index.  Only streams whose final size is ≤ streamCacheMaxSize
 	// are stored, and at most streamCacheMaxEntries entries are kept.
-	// GetStream populates it; callers MUST NOT mutate the returned slice.
+	// GetStream returns copies from the cache so caller mutation cannot poison
+	// later reads.
 	streamCache map[uint32][]byte
 }
 
@@ -141,28 +142,36 @@ type VBAModule struct {
 }
 
 func (self *OLEFile) ReadSector(sector uint32) []byte {
-	start := self.SectorSize * int(sector+1)
-
-	to_read := self.SectorSize
-	if start > len(self.data) || start < 0 {
+	if self.SectorSize <= 0 {
 		return nil
 	}
 
-	if start+to_read >= len(self.data) {
+	start64 := (uint64(sector) + 1) * uint64(self.SectorSize)
+	if start64 > uint64(len(self.data)) {
+		return nil
+	}
+	start := int(start64)
+
+	to_read := self.SectorSize
+	if to_read > len(self.data)-start {
 		to_read = len(self.data) - start
 	}
 	return self.data[start : start+to_read]
 }
 
 func (self *OLEFile) ReadMiniSector(sector uint32) []byte {
-	start := self.MiniSectorSize * int(sector)
-
-	to_read := self.MiniSectorSize
-	if start > len(self.ministream) || start < 0 {
+	if self.MiniSectorSize <= 0 {
 		return nil
 	}
 
-	if start+to_read >= len(self.ministream) {
+	start64 := uint64(sector) * uint64(self.MiniSectorSize)
+	if start64 > uint64(len(self.ministream)) {
+		return nil
+	}
+	start := int(start64)
+
+	to_read := self.MiniSectorSize
+	if to_read > len(self.ministream)-start {
 		to_read = len(self.ministream) - start
 	}
 
@@ -170,14 +179,14 @@ func (self *OLEFile) ReadMiniSector(sector uint32) []byte {
 }
 
 func (self *OLEFile) ReadFat(sector uint32) (uint32, bool) {
-	if int(sector) >= len(self.Fat) {
+	if uint64(sector) >= uint64(len(self.Fat)) {
 		return 0, false
 	}
 	return self.Fat[sector], true
 }
 
 func (self *OLEFile) ReadMiniFat(sector uint32) (uint32, bool) {
-	if int(sector) >= len(self.MiniFat) {
+	if uint64(sector) >= uint64(len(self.MiniFat)) {
 		return 0, false
 	}
 	return self.MiniFat[sector], true
@@ -223,7 +232,14 @@ func (self *OLEFile) _ReadChain(
 	}
 
 	check := make(map[uint32]bool)
-	result := make([]byte, 0, count*sectorSize)
+	capacity := 0
+	if count > 0 && sectorSize > 0 {
+		maxInt := int(^uint(0) >> 1)
+		if count <= maxInt/sectorSize {
+			capacity = count * sectorSize
+		}
+	}
+	result := make([]byte, 0, capacity)
 
 	for sector := start; sector != ENDOFCHAIN; {
 		result = append(result, ReadSector(sector)...)
@@ -245,35 +261,40 @@ func (self *OLEFile) _ReadChain(
 }
 
 func (self *OLEFile) GetStream(index uint32) []byte {
-	if int(index) >= len(self.Directory) {
+	if uint64(index) >= uint64(len(self.Directory)) {
 		return nil
 	}
 
-	// Cache hit: return the pre-materialised slice directly.
-	// Callers must not mutate the returned []byte.
 	if cached, ok := self.streamCache[index]; ok {
-		return cached
+		return append([]byte(nil), cached...)
 	}
 
 	var data []byte
 
 	d := self.Directory[index]
+	if d == nil {
+		return nil
+	}
 	if d.Header.Size < self.Header.MiniSectorCutoff {
 		data = self.ReadMiniChain(d.Header.SectStart)
 	} else {
 		data = self.ReadChain(d.Header.SectStart)
 	}
 
-	result := data[:uint32_min(d.Header.Size, uint32(len(data)))]
+	size := len(data)
+	if uint64(d.Header.Size) < uint64(size) {
+		size = int(d.Header.Size)
+	}
+	result := data[:size]
 
 	// Cache small streams (≤ streamCacheMaxSize) up to streamCacheMaxEntries.
 	// Large or rarely-read streams are returned uncached.
-	if uint32(len(result)) <= streamCacheMaxSize &&
+	if len(result) <= streamCacheMaxSize &&
 		len(self.streamCache) < streamCacheMaxEntries {
 		if self.streamCache == nil {
 			self.streamCache = make(map[uint32][]byte, streamCacheMaxEntries)
 		}
-		self.streamCache[index] = result
+		self.streamCache[index] = append([]byte(nil), result...)
 	}
 
 	return result
@@ -327,6 +348,9 @@ func NewOLEFile(data []byte) (*OLEFile, error) {
 	if self.Header.SectorShift != expectedSectorShift {
 		return nil, fmt.Errorf("unexpected sector size: %d", 1<<self.Header.SectorShift)
 	}
+	if self.Header.MiniSectorShift != miniSectorShift {
+		return nil, fmt.Errorf("unexpected mini sector size shift: %d", self.Header.MiniSectorShift)
+	}
 
 	self.SectorSize = 1 << self.Header.SectorShift
 	if self.SectorSize < 8 {
@@ -340,6 +364,9 @@ func NewOLEFile(data []byte) (*OLEFile, error) {
 	}
 
 	self.SectorCount = len(data)/self.SectorSize - 1 // Subtract 1 for the header sector
+	if self.SectorCount > MAX_SECTORS {
+		return nil, fmt.Errorf("sector count exceeds MAX_SECTORS: %d", self.SectorCount)
+	}
 	for _, sect := range self.Header.SectFat {
 		if sect != FREESECT {
 			self.FatSectors = append(self.FatSectors, sect)
@@ -397,9 +424,14 @@ func NewOLEFile(data []byte) (*OLEFile, error) {
 
 	// get the list of directory sectors
 	dir_buffer := self.ReadChain(self.Header.SectDirStart)
-	for directory_index := 0; directory_index*128 < len(dir_buffer); directory_index += 1 {
+	if len(dir_buffer)%128 != 0 {
+		return nil, errors.New("directory stream has a partial entry")
+	}
+	self.Directory = make([]*Directory, len(dir_buffer)/128)
+	for directory_index := 0; directory_index < len(self.Directory); directory_index += 1 {
+		start := directory_index * 128
 		dir_obj, err := NewDirectory(
-			dir_buffer[min(directory_index*128, len(dir_buffer)):],
+			dir_buffer[start:start+128],
 			uint32(directory_index))
 		if err != nil {
 			return nil, err
@@ -407,10 +439,10 @@ func NewOLEFile(data []byte) (*OLEFile, error) {
 		if dir_obj == nil { // Unallocated index
 			continue
 		}
-		self.Directory = append(self.Directory, dir_obj)
+		self.Directory[directory_index] = dir_obj
 	}
 
-	if len(self.Directory) == 0 {
+	if len(self.Directory) == 0 || self.Directory[0] == nil {
 		return nil, errors.New("Directory not found")
 	}
 
@@ -419,6 +451,9 @@ func NewOLEFile(data []byte) (*OLEFile, error) {
 	// any write-race if callers ever access the OLEFile concurrently.
 	self.nameIdx = make(map[string]*Directory, len(self.Directory))
 	for _, d := range self.Directory {
+		if d == nil {
+			continue
+		}
 		if _, exists := self.nameIdx[d.Name]; !exists {
 			self.nameIdx[d.Name] = d
 		}
@@ -428,14 +463,17 @@ func NewOLEFile(data []byte) (*OLEFile, error) {
 	root_directory := self.Directory[0]
 	if root_directory.Header.SectStart != ENDOFCHAIN {
 		self.ministream = self.ReadChain(root_directory.Header.SectStart)
-		if len(self.ministream) < int(root_directory.Header.Size) {
+		if uint64(len(self.ministream)) < uint64(root_directory.Header.Size) {
 			return nil, fmt.Errorf(
 				"specified size is larger than actual stream length %v\n",
 				len(self.ministream))
 		}
 
-		self.ministream = self.ministream[:uint32_min(
-			root_directory.Header.Size, uint32(len(self.ministream)))]
+		ministreamSize := len(self.ministream)
+		if uint64(root_directory.Header.Size) < uint64(ministreamSize) {
+			ministreamSize = int(root_directory.Header.Size)
+		}
+		self.ministream = self.ministream[:ministreamSize]
 
 		data := self.ReadChain(self.Header.SectMiniFatStart)
 		for i := 0; i < len(data); i += self.SectorSize {
@@ -531,8 +569,13 @@ func DecompressStream(compressed_container []byte) []byte {
 		compressed_current += 2
 
 		if chunk_is_compressed == 0 { // uncompressed
-			decompressed_container = append(decompressed_container,
-				compressed_container[compressed_current:compressed_end]...)
+			chunk := compressed_container[compressed_current:compressed_end]
+			if len(chunk) > MAX_DECOMPRESSED-len(decompressed_container) {
+				chunk = chunk[:MAX_DECOMPRESSED-len(decompressed_container)]
+				decompressed_container = append(decompressed_container, chunk...)
+				return decompressed_container
+			}
+			decompressed_container = append(decompressed_container, chunk...)
 			compressed_current = compressed_end
 			continue
 		}
@@ -546,6 +589,9 @@ func DecompressStream(compressed_container []byte) []byte {
 					if compressed_current >= compressed_end {
 						DebugPrintf("Compressed stream ended prematurely")
 						break
+					}
+					if len(decompressed_container) >= MAX_DECOMPRESSED {
+						return decompressed_container
 					}
 					decompressed_container = append(decompressed_container,
 						compressed_container[compressed_current])
@@ -575,9 +621,12 @@ func DecompressStream(compressed_container []byte) []byte {
 
 				for index := copy_source; index < copy_source+int(length); index++ {
 					DebugPrintf("len %v idx %v", len(decompressed_container), index)
-					if index < 0 || index > len(decompressed_container) {
+					if index < 0 || index >= len(decompressed_container) {
 						DebugPrintf("Decompression out of bound %v (container length %v)",
 							index, len(decompressed_container))
+						return decompressed_container
+					}
+					if len(decompressed_container) >= MAX_DECOMPRESSED {
 						return decompressed_container
 					}
 
@@ -612,7 +661,7 @@ func copytoken_help(difference int) (int, int, uint32, int) {
 }
 
 func getUint16(dir_stream []byte, offset *int) uint16 {
-	if len(dir_stream) < *offset+2 {
+	if offset == nil || !hasBytes(dir_stream, *offset, 2) {
 		return 0
 	}
 
@@ -622,7 +671,7 @@ func getUint16(dir_stream []byte, offset *int) uint16 {
 }
 
 func getUint32(dir_stream []byte, offset *int) uint32 {
-	if len(dir_stream) < *offset+4 {
+	if offset == nil || !hasBytes(dir_stream, *offset, 4) {
 		return 0
 	}
 
@@ -710,7 +759,9 @@ func ExtractMacros(ofdoc *OLEFile) ([]*VBAModule, error) {
 	if compatversion_id == 0x4A {
 		compatversion_size := getUint32(dir_stream, &i)
 		check_value("PROJECTCOMPATVERSION_Size", 0x4, compatversion_size)
-		i += 4 // Skip ProjectCompatVersion
+		if !skipBytes(dir_stream, &i, 4) { // Skip ProjectCompatVersion
+			return nil, errors.New("PROJECTCOMPATVERSION value out of range")
+		}
 	} else if i >= 2 {
 		i -= 2 // No CompatVersionRecord present - undo read of the ID
 	}
@@ -751,7 +802,9 @@ func ExtractMacros(ofdoc *OLEFile) ([]*VBAModule, error) {
 	}
 
 	// projectname_projectname := dir_stream[i : i+projectname_sizeof_projectname]
-	i += projectname_sizeof_projectname
+	if !skipBytes(dir_stream, &i, projectname_sizeof_projectname) {
+		return nil, errors.New("PROJECTNAME_ProjectName value out of range")
+	}
 
 	// PROJECTDOCSTRING Record
 	projectdocstring_id := getUint16(dir_stream, &i)
@@ -763,7 +816,9 @@ func ExtractMacros(ofdoc *OLEFile) ([]*VBAModule, error) {
 			projectdocstring_sizeof_docstring))
 	}
 	// projectdocstring_docstring := dir_stream[i : i+projectdocstring_sizeof_docstring]
-	i += projectdocstring_sizeof_docstring
+	if !skipBytes(dir_stream, &i, projectdocstring_sizeof_docstring) {
+		return nil, errors.New("PROJECTDOCSTRING_DocString value out of range")
+	}
 
 	projectdocstring_reserved := getUint16(dir_stream, &i)
 	check_value("PROJECTDOCSTRING_Reserved", 0x0040, uint32(projectdocstring_reserved))
@@ -773,29 +828,36 @@ func ExtractMacros(ofdoc *OLEFile) ([]*VBAModule, error) {
 		return nil, errors.New("PROJECTDOCSTRING_SizeOfDocStringUnicode is not even")
 	}
 	//	projectdocstring_docstring_unicode := dir_stream[i : i+projectdocstring_sizeof_docstring_unicode]
-	i += projectdocstring_sizeof_docstring_unicode
+	if !skipBytes(dir_stream, &i, projectdocstring_sizeof_docstring_unicode) {
+		return nil, errors.New("PROJECTDOCSTRING_DocStringUnicode value out of range")
+	}
 
 	// PROJECTHELPFILEPATH Record - MS-OVBA 2.3.4.2.1.7
 	projecthelpfilepath_id := getUint16(dir_stream, &i)
 	check_value("PROJECTHELPFILEPATH_Id", 0x0006, uint32(projecthelpfilepath_id))
 	projecthelpfilepath_sizeof_helpfile1 := int(getUint32(dir_stream, &i))
-	if projecthelpfilepath_sizeof_helpfile1 > 260 || projecthelpfilepath_sizeof_helpfile1+i > len(dir_stream) {
+	if projecthelpfilepath_sizeof_helpfile1 > 260 ||
+		!hasBytes(dir_stream, i, projecthelpfilepath_sizeof_helpfile1) {
 		return nil, errors.New(fmt.Sprintf(
 			"PROJECTHELPFILEPATH_SizeOfHelpFile1 value not in range: %v", projecthelpfilepath_sizeof_helpfile1))
 	}
 	projecthelpfilepath_helpfile1 := dir_stream[i : i+projecthelpfilepath_sizeof_helpfile1]
-	i += projecthelpfilepath_sizeof_helpfile1
+	if !skipBytes(dir_stream, &i, projecthelpfilepath_sizeof_helpfile1) {
+		return nil, errors.New("PROJECTHELPFILEPATH_HelpFile1 value out of range")
+	}
 	projecthelpfilepath_reserved := getUint16(dir_stream, &i)
 	check_value("PROJECTHELPFILEPATH_Reserved", 0x003D, uint32(projecthelpfilepath_reserved))
 	projecthelpfilepath_sizeof_helpfile2 := int(getUint32(dir_stream, &i))
 	if projecthelpfilepath_sizeof_helpfile2 != projecthelpfilepath_sizeof_helpfile1 {
 		return nil, errors.New("PROJECTHELPFILEPATH_SizeOfHelpFile1 does not equal PROJECTHELPFILEPATH_SizeOfHelpFile2")
-	} else if projecthelpfilepath_sizeof_helpfile2+i > len(dir_stream) {
+	} else if !hasBytes(dir_stream, i, projecthelpfilepath_sizeof_helpfile2) {
 		return nil, errors.New(fmt.Sprintf(
 			"PROJECTHELPFILEPATH_SizeOfHelpFile2 value not in range: %v", projecthelpfilepath_sizeof_helpfile2))
 	}
 	projecthelpfilepath_helpfile2 := dir_stream[i : i+projecthelpfilepath_sizeof_helpfile2]
-	i += projecthelpfilepath_sizeof_helpfile2
+	if !skipBytes(dir_stream, &i, projecthelpfilepath_sizeof_helpfile2) {
+		return nil, errors.New("PROJECTHELPFILEPATH_HelpFile2 value out of range")
+	}
 	if string(projecthelpfilepath_helpfile2) != string(projecthelpfilepath_helpfile1) {
 		return nil, errors.New("PROJECTHELPFILEPATH_HelpFile1 does not equal PROJECTHELPFILEPATH_HelpFile2")
 	}
@@ -807,7 +869,9 @@ func ExtractMacros(ofdoc *OLEFile) ([]*VBAModule, error) {
 	check_value("PROJECTHELPCONTEXT_Size", 0x0004, projecthelpcontext_size)
 
 	// projecthelpcontext_helpcontext := getUint32(dir_stream, &i)
-	i += 4
+	if !skipBytes(dir_stream, &i, 4) {
+		return nil, errors.New("PROJECTHELPCONTEXT_HelpContext value out of range")
+	}
 
 	// PROJECTLIBFLAGS Record
 	projectlibflags_id := getUint16(dir_stream, &i)
@@ -827,7 +891,9 @@ func ExtractMacros(ofdoc *OLEFile) ([]*VBAModule, error) {
 		projectversion_versionmajor := getUint32(dir_stream, &i)
 		projectversion_versionminor := getUint16(dir_stream, &i)
 	*/
-	i += 6
+	if !skipBytes(dir_stream, &i, 6) {
+		return nil, errors.New("PROJECTVERSION version value out of range")
+	}
 
 	// PROJECTCONSTANTS Record
 	projectconstants_id := getUint16(dir_stream, &i)
@@ -839,7 +905,9 @@ func ExtractMacros(ofdoc *OLEFile) ([]*VBAModule, error) {
 				"PROJECTCONSTANTS_SizeOfConstants value not in range: %v", projectconstants_sizeof_constants))
 		}
 		// projectconstants_constants := dir_stream[i : i+projectconstants_sizeof_constants]
-		i += projectconstants_sizeof_constants
+		if !skipBytes(dir_stream, &i, projectconstants_sizeof_constants) {
+			return nil, errors.New("PROJECTCONSTANTS_Constants value out of range")
+		}
 		projectconstants_reserved := getUint16(dir_stream, &i)
 		check_value("PROJECTCONSTANTS_Reserved", 0x003C, uint32(projectconstants_reserved))
 		projectconstants_sizeof_constants_unicode := int(getUint32(dir_stream, &i))
@@ -847,7 +915,9 @@ func ExtractMacros(ofdoc *OLEFile) ([]*VBAModule, error) {
 			return nil, errors.New("PROJECTCONSTANTS_SizeOfConstantsUnicode is not even")
 		}
 		// projectconstants_constants_unicode := dir_stream[i : i+projectconstants_sizeof_constants_unicode]
-		i += projectconstants_sizeof_constants_unicode
+		if !skipBytes(dir_stream, &i, projectconstants_sizeof_constants_unicode) {
+			return nil, errors.New("PROJECTCONSTANTS_ConstantsUnicode value out of range")
+		}
 	} else if i >= 2 {
 		i -= 2
 	}
@@ -866,7 +936,9 @@ loop:
 			// REFERENCENAME
 			reference_sizeof_name := int(getUint32(dir_stream, &i))
 			// reference_name := dir_stream[i : i+reference_sizeof_name]
-			i += reference_sizeof_name
+			if !skipBytes(dir_stream, &i, reference_sizeof_name) {
+				return nil, errors.New("REFERENCENAME_Name value out of range")
+			}
 			reference_reserved := getUint16(dir_stream, &i)
 			/*
 			 # According to [MS-OVBA] 2.3.4.2.2.2 REFERENCENAME Record:
@@ -881,7 +953,9 @@ loop:
 			if reference_reserved == 0x003E {
 				reference_sizeof_name_unicode := int(getUint32(dir_stream, &i))
 				// reference_name_unicode := dir_stream[i : i+reference_sizeof_name_unicode]
-				i += reference_sizeof_name_unicode
+				if !skipBytes(dir_stream, &i, reference_sizeof_name_unicode) {
+					return nil, errors.New("REFERENCENAME_NameUnicode value out of range")
+				}
 				continue loop
 			} else {
 				check = reference_reserved
@@ -892,16 +966,22 @@ loop:
 			referenceoriginal_sizeof_libidoriginal := int(getUint32(dir_stream, &i))
 
 			// referenceoriginal_libidoriginal := dir_stream[i : i+referenceoriginal_sizeof_libidoriginal]
-			i += referenceoriginal_sizeof_libidoriginal
+			if !skipBytes(dir_stream, &i, referenceoriginal_sizeof_libidoriginal) {
+				return nil, errors.New("REFERENCEORIGINAL_LibidOriginal value out of range")
+			}
 			continue
 
 		case 0x002F:
 			// REFERENCECONTROL
 			// referencecontrol_sizetwiddled := int(getUint32(dir_stream, &i))
-			i += 4
+			if !skipBytes(dir_stream, &i, 4) {
+				return nil, errors.New("REFERENCECONTROL_SizeTwiddled value out of range")
+			}
 			referencecontrol_sizeof_libidtwiddled := int(getUint32(dir_stream, &i))
 			// referencecontrol_libidtwiddled := dir_stream[i : i+referencecontrol_sizeof_libidtwiddled]
-			i += referencecontrol_sizeof_libidtwiddled
+			if !skipBytes(dir_stream, &i, referencecontrol_sizeof_libidtwiddled) {
+				return nil, errors.New("REFERENCECONTROL_LibidTwiddled value out of range")
+			}
 			referencecontrol_reserved1 := getUint32(dir_stream, &i)
 			check_value("REFERENCECONTROL_Reserved1", 0x0000, referencecontrol_reserved1)
 			referencecontrol_reserved2 := int(getUint16(dir_stream, &i))
@@ -914,12 +994,16 @@ loop:
 			if check2 == 0x0016 {
 				referencecontrol_namerecordextended_sizeof_name := int(getUint32(dir_stream, &i))
 				// referencecontrol_namerecordextended_name := dir_stream[i : i+ referencecontrol_namerecordextended_sizeof_name]
-				i += referencecontrol_namerecordextended_sizeof_name
+				if !skipBytes(dir_stream, &i, referencecontrol_namerecordextended_sizeof_name) {
+					return nil, errors.New("REFERENCECONTROL_NameRecordExtended_Name value out of range")
+				}
 				referencecontrol_namerecordextended_reserved := int(getUint16(dir_stream, &i))
 				if referencecontrol_namerecordextended_reserved == 0x003E {
 					referencecontrol_namerecordextended_sizeof_name_unicode := int(getUint32(dir_stream, &i))
 					// referencecontrol_namerecordextended_name_unicode := dir_stream[i : i+referencecontrol_namerecordextended_sizeof_name_unicode]
-					i += referencecontrol_namerecordextended_sizeof_name_unicode
+					if !skipBytes(dir_stream, &i, referencecontrol_namerecordextended_sizeof_name_unicode) {
+						return nil, errors.New("REFERENCECONTROL_NameRecordExtended_NameUnicode value out of range")
+					}
 					referencecontrol_reserved3 = int(getUint16(dir_stream, &i))
 
 				} else {
@@ -930,25 +1014,35 @@ loop:
 			}
 			check_value("REFERENCECONTROL_Reserved3", 0x0030, uint32(referencecontrol_reserved3))
 			// referencecontrol_sizeextended := int(getUint32(dir_stream, &i))
-			i += 4
+			if !skipBytes(dir_stream, &i, 4) {
+				return nil, errors.New("REFERENCECONTROL_SizeExtended value out of range")
+			}
 			referencecontrol_sizeof_libidextended := int(getUint32(dir_stream, &i))
 			// referencecontrol_libidextended := dir_stream[i : i+referencecontrol_sizeof_libidextended]
-			i += referencecontrol_sizeof_libidextended
+			if !skipBytes(dir_stream, &i, referencecontrol_sizeof_libidextended) {
+				return nil, errors.New("REFERENCECONTROL_LibidExtended value out of range")
+			}
 			// referencecontrol_reserved4 := int(getUint32(dir_stream, &i))
 			// referencecontrol_reserved5 := int(getUint16(dir_stream, &i))
 			// referencecontrol_originaltypelib := dir_stream[i : i+16]
 			// referencecontrol_cookie := int(getUint32(dir_stream, &i))
-			i += 6 + 16 + 4
+			if !skipBytes(dir_stream, &i, 6+16+4) {
+				return nil, errors.New("REFERENCECONTROL tail value out of range")
+			}
 
 			continue
 
 		case 0x000D:
 			// REFERENCEREGISTERED
 			// referenceregistered_size := int(getUint32(dir_stream, &i))
-			i += 4
+			if !skipBytes(dir_stream, &i, 4) {
+				return nil, errors.New("REFERENCEREGISTERED_Size value out of range")
+			}
 			referenceregistered_sizeof_libid := int(getUint32(dir_stream, &i))
 			// referenceregistered_libid := dir_stream[i : i+referenceregistered_sizeof_libid]
-			i += referenceregistered_sizeof_libid
+			if !skipBytes(dir_stream, &i, referenceregistered_sizeof_libid) {
+				return nil, errors.New("REFERENCEREGISTERED_Libid value out of range")
+			}
 			referenceregistered_reserved1 := getUint32(dir_stream, &i)
 			check_value("REFERENCEREGISTERED_Reserved1", 0x0000, referenceregistered_reserved1)
 			referenceregistered_reserved2 := getUint16(dir_stream, &i)
@@ -959,16 +1053,24 @@ loop:
 		case 0x000E:
 			// REFERENCEPROJECT
 			// referenceproject_size := getUint32(dir_stream, &i)
-			i += 4
+			if !skipBytes(dir_stream, &i, 4) {
+				return nil, errors.New("REFERENCEPROJECT_Size value out of range")
+			}
 			referenceproject_sizeof_libidabsolute := int(getUint32(dir_stream, &i))
 			// referenceproject_libidabsolute := dir_stream[i : i+referenceproject_sizeof_libidabsolute]
-			i += referenceproject_sizeof_libidabsolute
+			if !skipBytes(dir_stream, &i, referenceproject_sizeof_libidabsolute) {
+				return nil, errors.New("REFERENCEPROJECT_LibidAbsolute value out of range")
+			}
 			referenceproject_sizeof_libidrelative := int(getUint32(dir_stream, &i))
 			// referenceproject_libidrelative := dir_stream[i : i+referenceproject_sizeof_libidrelative]
-			i += referenceproject_sizeof_libidrelative
+			if !skipBytes(dir_stream, &i, referenceproject_sizeof_libidrelative) {
+				return nil, errors.New("REFERENCEPROJECT_LibidRelative value out of range")
+			}
 			// referenceproject_majorversion := getUint32(dir_stream, &i)
 			// referenceproject_minorversion := getUint16(dir_stream, &i)
-			i += 6
+			if !skipBytes(dir_stream, &i, 6) {
+				return nil, errors.New("REFERENCEPROJECT version value out of range")
+			}
 			continue
 		default:
 			return nil, fmt.Errorf("invalid or unknown check Id %04x", check)
@@ -991,7 +1093,9 @@ loop:
 	check_value("PROJECTMODULES_ProjectCookieRecord_Size", 0x0002, uint32(projectmodules_projectcookierecord_size))
 
 	// projectmodules_projectcookierecord_cookie := getUint16(dir_stream, &i)
-	i += 2
+	if !skipBytes(dir_stream, &i, 2) {
+		return nil, errors.New("PROJECTMODULES_ProjectCookieRecord_Cookie value out of range")
+	}
 
 	// short function to simplify unicode text output
 	//    uni_out = lambda unicode_text: unicode_text.encode("utf-8", "replace")
@@ -1009,11 +1113,13 @@ loop:
 
 		check_value("MODULENAME_Id", 0x0019, uint32(modulename_id))
 		modulename_sizeof_modulename := int(getUint32(dir_stream, &i))
-		if len(dir_stream) < i+modulename_sizeof_modulename {
+		if !hasBytes(dir_stream, i, modulename_sizeof_modulename) {
 			return nil, errors.New("MODULENAME_SizeOfModuleName value not in range")
 		}
 		modulename_modulename := string(dir_stream[i : i+modulename_sizeof_modulename])
-		i += modulename_sizeof_modulename
+		if !skipBytes(dir_stream, &i, modulename_sizeof_modulename) {
+			return nil, errors.New("MODULENAME_ModuleName value out of range")
+		}
 
 		// TODO: preset variables to avoid "referenced before assignment" errors
 		modulename_unicode_modulename_unicode := []byte{}
@@ -1022,33 +1128,39 @@ loop:
 		section_id := getUint16(dir_stream, &i)
 		if section_id == 0x0047 {
 			modulename_unicode_sizeof_modulename_unicode := int(getUint32(dir_stream, &i))
-			if len(dir_stream) < i+modulename_unicode_sizeof_modulename_unicode {
+			if !hasBytes(dir_stream, i, modulename_unicode_sizeof_modulename_unicode) {
 				return nil, errors.New("MODULENAMEUNICODE_SizeOfModuleNameUnicode value not in range")
 			}
 			modulename_unicode_modulename_unicode = dir_stream[i : i+
 				modulename_unicode_sizeof_modulename_unicode]
-			i += modulename_unicode_sizeof_modulename_unicode
+			if !skipBytes(dir_stream, &i, modulename_unicode_sizeof_modulename_unicode) {
+				return nil, errors.New("MODULENAMEUNICODE_ModuleNameUnicode value out of range")
+			}
 			// just guessing that this is the same encoding as used in OleFileIO
 			section_id = getUint16(dir_stream, &i)
 		}
 
 		if section_id == 0x001A {
 			modulestreamname_sizeof_streamname := int(getUint32(dir_stream, &i))
-			if len(dir_stream) < i+modulestreamname_sizeof_streamname {
+			if !hasBytes(dir_stream, i, modulestreamname_sizeof_streamname) {
 				return nil, errors.New("MODULESTREAMNAME_SizeOfStreamName value not in range")
 			}
 			modulestreamname_streamname = string(dir_stream[i : i+modulestreamname_sizeof_streamname])
-			i = i + modulestreamname_sizeof_streamname
+			if !skipBytes(dir_stream, &i, modulestreamname_sizeof_streamname) {
+				return nil, errors.New("MODULESTREAMNAME_StreamName value out of range")
+			}
 
 			modulestreamname_reserved := getUint16(dir_stream, &i)
 			check_value("MODULESTREAMNAME_Reserved", 0x0032, uint32(modulestreamname_reserved))
 			modulestreamname_sizeof_streamname_unicode := int(getUint32(dir_stream, &i))
-			if len(dir_stream) < i+modulestreamname_sizeof_streamname_unicode {
+			if !hasBytes(dir_stream, i, modulestreamname_sizeof_streamname_unicode) {
 				return nil, errors.New("MODULESTREAMNAME_SizeOfStreamNameUnicode value not in range")
 			}
 			modulestreamname_streamname_unicode = dir_stream[i : i+
 				modulestreamname_sizeof_streamname_unicode]
-			i += modulestreamname_sizeof_streamname_unicode
+			if !skipBytes(dir_stream, &i, modulestreamname_sizeof_streamname_unicode) {
+				return nil, errors.New("MODULESTREAMNAME_StreamNameUnicode value out of range")
+			}
 
 			// just guessing that this is the same encoding as used in OleFileIO
 			section_id = getUint16(dir_stream, &i)
@@ -1060,12 +1172,16 @@ loop:
 			moduledocstring_sizeof_docstring := int(getUint32(dir_stream, &i))
 
 			// moduledocstring_docstring := dir_stream[i : i+moduledocstring_sizeof_docstring]
-			i = i + moduledocstring_sizeof_docstring
+			if !skipBytes(dir_stream, &i, moduledocstring_sizeof_docstring) {
+				return nil, errors.New("MODULEDOCSTRING_DocString value out of range")
+			}
 			moduledocstring_reserved := getUint16(dir_stream, &i)
 			check_value("MODULEDOCSTRING_Reserved", 0x0048, uint32(moduledocstring_reserved))
 			moduledocstring_sizeof_docstring_unicode := int(getUint32(dir_stream, &i))
 			// moduledocstring_docstring_unicode := dir_stream[i : i+moduledocstring_sizeof_docstring_unicode]
-			i = i + moduledocstring_sizeof_docstring_unicode
+			if !skipBytes(dir_stream, &i, moduledocstring_sizeof_docstring_unicode) {
+				return nil, errors.New("MODULEDOCSTRING_DocStringUnicode value out of range")
+			}
 
 			section_id = getUint16(dir_stream, &i)
 		}
@@ -1085,7 +1201,9 @@ loop:
 			modulehelpcontext_size := getUint32(dir_stream, &i)
 			check_value("MODULEHELPCONTEXT_Size", 0x0004, modulehelpcontext_size)
 			// modulehelpcontext_helpcontext := getUint32(dir_stream, &i)
-			i += 4
+			if !skipBytes(dir_stream, &i, 4) {
+				return nil, errors.New("MODULEHELPCONTEXT_HelpContext value out of range")
+			}
 			section_id = getUint16(dir_stream, &i)
 		}
 		if section_id == 0x002C {
@@ -1094,12 +1212,16 @@ loop:
 			modulecookie_size := getUint32(dir_stream, &i)
 			check_value("MODULECOOKIE_Size", 0x0002, modulecookie_size)
 			// modulecookie_cookie := getUint16(dir_stream, &i)
-			i += 2
+			if !skipBytes(dir_stream, &i, 2) {
+				return nil, errors.New("MODULECOOKIE_Cookie value out of range")
+			}
 			section_id = getUint16(dir_stream, &i)
 		}
 		if section_id == 0x0021 || section_id == 0x0022 {
 			// moduletype_reserved := getUint32(dir_stream, &i)
-			i += 4
+			if !skipBytes(dir_stream, &i, 4) {
+				return nil, errors.New("MODULETYPE_Reserved value out of range")
+			}
 			section_id = getUint16(dir_stream, &i)
 		}
 		if section_id == 0x0025 {
@@ -1147,12 +1269,12 @@ loop:
 
 		DebugPrintf("length of code_data = %v", len(code_data))
 		DebugPrintf("offset of code_data = %v", moduleoffset_textoffset)
-		if int(moduleoffset_textoffset) > len(code_data) {
+		if uint64(moduleoffset_textoffset) > uint64(len(code_data)) {
 			DebugPrintf("invalid offset for module %v: %v",
 				modulestreamname_streamname, moduleoffset_textoffset)
 			continue
 		}
-		code_data = code_data[moduleoffset_textoffset:]
+		code_data = code_data[int(moduleoffset_textoffset):]
 		if len(code_data) > 0 {
 			result = append(result, &VBAModule{
 				Code: string(DecompressStream(code_data)),

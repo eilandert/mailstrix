@@ -32,13 +32,26 @@ func TestDecompressStreamBombCapped(t *testing.T) {
 
 	got := DecompressStream(in)
 
-	// Cap is checked at the top of the chunk loop, so overshoot is at most one
-	// chunk (<=4093 bytes) past MAX_DECOMPRESSED.
 	if len(got) < MAX_DECOMPRESSED {
 		t.Fatalf("expected output to reach the cap, got %d bytes (cap %d)", len(got), MAX_DECOMPRESSED)
 	}
-	if len(got) > MAX_DECOMPRESSED+4096 {
-		t.Fatalf("output not capped: got %d bytes, want <= %d", len(got), MAX_DECOMPRESSED+4096)
+	if len(got) > MAX_DECOMPRESSED {
+		t.Fatalf("output not capped: got %d bytes, want <= %d", len(got), MAX_DECOMPRESSED)
+	}
+}
+
+func TestDecompressStreamBombHardCapped(t *testing.T) {
+	chunk := uncompressedChunk()
+	nChunks := (MAX_DECOMPRESSED / 4093) + 16
+	in := make([]byte, 0, 1+nChunks*len(chunk))
+	in = append(in, 0x01)
+	for i := 0; i < nChunks; i++ {
+		in = append(in, chunk...)
+	}
+
+	got := DecompressStream(in)
+	if len(got) != MAX_DECOMPRESSED {
+		t.Fatalf("expected hard cap at %d bytes, got %d", MAX_DECOMPRESSED, len(got))
 	}
 }
 

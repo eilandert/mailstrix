@@ -217,6 +217,9 @@ func TestFindStreamByName_KeepFirst(t *testing.T) {
 	// Rebuild the name index as NewOLEFile would: keep-first.
 	ole.nameIdx = make(map[string]*Directory, len(ole.Directory))
 	for _, d := range ole.Directory {
+		if d == nil {
+			continue
+		}
 		if _, exists := ole.nameIdx[d.Name]; !exists {
 			ole.nameIdx[d.Name] = d
 		}
@@ -360,4 +363,3 @@ func BenchmarkGetStream_Cached(b *testing.B) {
 		_ = ole.GetStream(d.Index)
 	}
 }
-

@@ -4,8 +4,9 @@ const (
 	// Limit the size of the document
 	MAX_SECTORS = 1024 * 1024
 
-	sectorShiftV3 = 0x9
-	sectorShiftV4 = 0xC
+	sectorShiftV3   = 0x9
+	sectorShiftV4   = 0xC
+	miniSectorShift = 0x6
 
 	// MAX_DECOMPRESSED bounds DecompressStream output. MS-OVBA copy tokens can
 	// expand a 4096-byte chunk window repeatedly; a crafted input (capped at
