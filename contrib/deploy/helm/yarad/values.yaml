@@ -1,0 +1,174 @@
+# Default values for the yarad chart.
+# yarad is an internal YARA scan backend for rspamd. It is NOT web-facing —
+# the Service is ClusterIP by design (see README). All tuning is via YARAD_*
+# env vars that mirror docker/docker-compose.yml in the repo.
+
+image:
+  repository: eilandert/rspamd-yarad
+  # tag: defaults to "" which falls back to Chart.appVersion via the yarad.image
+  # helper. Set to "debian" for the glibc/debian variant, or pin a version.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Number of yarad replicas.
+# IMPORTANT: with replicaCount > 1, set redis.url so all replicas share the
+# verdict cache. Without it each replica keeps its own in-process LRU, so the
+# same message can be scanned once per replica (correctness is fine, dedup is not).
+replicaCount: 1
+
+# Name overrides.
+nameOverride: ""
+fullnameOverride: ""
+
+# --- Auth token (required for /scan) ----------------------------------------
+# yarad refuses every /scan with 503 until a token is set. The rspamd plugin
+# must present the same value. The chart still renders without a token, but
+# /scan will return 503 — see NOTES.txt.
+token:
+  # Inline value — the chart creates a Secret holding it (mounted as a file,
+  # wired to YARAD_TOKEN_FILE). Leave "" to skip.
+  value: ""
+  # Or reference a pre-existing Secret instead (takes precedence over value):
+  existingSecret: ""
+  secretKey: token
+
+# --- abuse.ch Auth-Key (optional threat-intel feeds) ------------------------
+# One free key (https://auth.abuse.ch/) enables URLhaus + MalwareBazaar +
+# ThreatFox. When set, all three *_KEY_FILE envs point at the mounted file.
+# NOTE: enabling the MalwareBazaar full feed adds ~40 MiB resident plus a
+# ~100-150 MiB transient spike on the daily dump — raise resources.limits.memory
+# to ~768Mi if you turn it on.
+abuseChKey:
+  value: ""
+  existingSecret: ""
+  secretKey: key
+
+# --- Optional YARAD_* tunables ----------------------------------------------
+# Only non-empty values are emitted as env vars; everything else uses the
+# binary's built-in defaults. Mirrors the commented block in docker-compose.yml.
+config:
+  YARAD_VERBOSE: ""          # "1" for per-request access lines (default 0)
+  YARAD_CACHE_TTL: ""        # seconds; 0 disables (default 3600)
+  YARAD_CACHE_SIZE: ""       # in-memory LRU entries (default 65536)
+  YARAD_MAX_CONCURRENT: ""   # in-flight scan cap; "auto"=CPU count, or a number
+  YARAD_BACKEND_TIMEOUT: ""  # queue/admission wait budget (s)
+  YARAD_SCAN_TIMEOUT: ""     # per-scan libyara budget (s)
+  YARAD_MBAZAAR_REFRESH: ""  # seconds; floor 300
+  YARAD_THREATFOX_REFRESH: "" # 6h default; floor 300
+  YARAD_FEODO: ""            # "1" to enable the Feodo C&C IP blocklist (no key needed)
+  YARAD_FEODO_REFRESH: ""    # seconds; floor 300
+  TZ: ""                     # e.g. "Europe/Amsterdam"
+
+# --- Shared verdict cache (Redis/Valkey) ------------------------------------
+redis:
+  url: ""                    # e.g. "redis://valkey:6379/6" — required for replicaCount > 1
+  prefix: ""                 # e.g. "yara:scan:"
+
+# --- Writable cache dir ------------------------------------------------------
+# Holds the updatable fetch-rules bundle (YARAD_CACHE_DIR). Rules themselves are
+# baked into the image; this is only needed if you use the threat-intel feeds,
+# which fetch/refresh data at runtime, and want it to survive across restarts.
+cache:
+  enabled: false
+  # Where the cache lives inside the container (sets YARAD_CACHE_DIR).
+  dir: /var/cache/yarad
+  # Use a PVC instead of an ephemeral emptyDir.
+  persistence:
+    enabled: false
+    size: 1Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+
+service:
+  type: ClusterIP
+  port: 8079
+
+# Listen address inside the container. 0.0.0.0 is correct for k8s.
+listen:
+  host: "0.0.0.0"
+  port: 8079
+
+# --- Resources ---------------------------------------------------------------
+# compose measured ~198 MiB peak; 512Mi gives burst/GC headroom. Bump memory to
+# ~768Mi if you enable the MalwareBazaar full feed (see abuseChKey note).
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# --- Prometheus Operator ServiceMonitor (optional) --------------------------
+# Scrapes /metrics. The repo ships matching alerts + dashboard under
+# contrib/deploy/prometheus/yarad-alerts.yml and contrib/deploy/grafana/.
+serviceMonitor:
+  # NOTE: /metrics is open by default. If you set config.YARAD_METRICS_AUTH "1",
+  # /metrics requires the token and this ServiceMonitor will get 401s unless you
+  # add the bearer token to its scrape config — leave metrics-auth off for in-
+  # cluster scraping, or wire a bearerTokenSecret here.
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  # Extra labels for Prometheus Operator's serviceMonitorSelector.
+  labels: {}
+  namespace: ""
+
+# --- Security context (mirrors docker-compose hardening) --------------------
+# distroless nonroot user = 65532, immutable rootfs, drop all caps, no priv esc.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# --- Probes ------------------------------------------------------------------
+# httpGet on /health (liveness) and /ready (readiness). The image also has a
+# `yarad health` exec subcommand, used by the docker healthcheck; httpGet is
+# more idiomatic for k8s.
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 20
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Scheduling passthrough.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

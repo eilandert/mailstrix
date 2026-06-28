@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "yarad.fullname" . }}
+  labels:
+    {{- include "yarad.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "yarad.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "yarad.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "yarad.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: yarad
+          image: {{ include "yarad.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.listen.port }}
+              protocol: TCP
+          env:
+            - name: YARAD_HOST
+              value: {{ .Values.listen.host | quote }}
+            - name: YARAD_PORT
+              value: {{ .Values.listen.port | quote }}
+            {{- if or .Values.token.value .Values.token.existingSecret }}
+            - name: YARAD_TOKEN_FILE
+              value: /run/secrets/yarad/token
+            {{- end }}
+            {{- if or .Values.abuseChKey.value .Values.abuseChKey.existingSecret }}
+            - name: YARAD_URLHAUS_KEY_FILE
+              value: /run/secrets/abusech/key
+            - name: YARAD_MBAZAAR_KEY_FILE
+              value: /run/secrets/abusech/key
+            - name: YARAD_THREATFOX_KEY_FILE
+              value: /run/secrets/abusech/key
+            {{- end }}
+            {{- if .Values.cache.enabled }}
+            - name: YARAD_CACHE_DIR
+              value: {{ .Values.cache.dir | quote }}
+            {{- end }}
+            {{- if .Values.redis.url }}
+            - name: YARAD_REDIS_URL
+              value: {{ .Values.redis.url | quote }}
+            {{- end }}
+            {{- if .Values.redis.prefix }}
+            - name: YARAD_REDIS_PREFIX
+              value: {{ .Values.redis.prefix | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.config }}
+            {{- if $v }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if or .Values.token.value .Values.token.existingSecret }}
+            - name: token
+              mountPath: /run/secrets/yarad
+              readOnly: true
+            {{- end }}
+            {{- if or .Values.abuseChKey.value .Values.abuseChKey.existingSecret }}
+            - name: abusech
+              mountPath: /run/secrets/abusech
+              readOnly: true
+            {{- end }}
+            {{- if .Values.cache.enabled }}
+            - name: cache
+              mountPath: {{ .Values.cache.dir | quote }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+        {{- if or .Values.token.value .Values.token.existingSecret }}
+        - name: token
+          secret:
+            secretName: {{ include "yarad.tokenSecretName" . }}
+            items:
+              - key: {{ .Values.token.secretKey }}
+                path: token
+        {{- end }}
+        {{- if or .Values.abuseChKey.value .Values.abuseChKey.existingSecret }}
+        - name: abusech
+          secret:
+            secretName: {{ include "yarad.abuseChSecretName" . }}
+            items:
+              - key: {{ .Values.abuseChKey.secretKey }}
+                path: key
+        {{- end }}
+        {{- if .Values.cache.enabled }}
+        - name: cache
+          {{- if .Values.cache.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "yarad.fullname" . }}-cache
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if and .Values.cache.enabled .Values.cache.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "yarad.fullname" . }}-cache
+  labels:
+    {{- include "yarad.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.cache.persistence.accessModes | nindent 4 }}
+  {{- if .Values.cache.persistence.storageClass }}
+  storageClassName: {{ .Values.cache.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.cache.persistence.size | quote }}
+{{- end }}

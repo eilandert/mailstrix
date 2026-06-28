@@ -1,0 +1,40 @@
+yarad has been deployed as Service {{ include "yarad.fullname" . }} (ClusterIP, port {{ .Values.service.port }}).
+
+It is an INTERNAL scan backend — there is no Ingress and the Service is
+ClusterIP by design. Point your rspamd yara.lua plugin at:
+
+    http://{{ include "yarad.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+1. Verify it is up:
+
+   kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "yarad.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+   curl -s http://127.0.0.1:{{ .Values.service.port }}/version
+   curl -s http://127.0.0.1:{{ .Values.service.port }}/health
+
+{{- if not (or .Values.token.value .Values.token.existingSecret) }}
+
+2. !! NO TOKEN SET !!
+   yarad will return HTTP 503 on every /scan until you set a shared token.
+   Set one of:
+     --set token.value=YOUR_SECRET
+     --set token.existingSecret=my-secret --set token.secretKey=token
+   The rspamd plugin MUST present the same value.
+{{- else }}
+
+2. Token is configured (yarad will accept /scan from clients presenting it).
+{{- end }}
+
+{{- if gt (int .Values.replicaCount) 1 }}
+
+3. replicaCount = {{ .Values.replicaCount }}.
+{{- if not .Values.redis.url }}
+   !! WARNING: redis.url is NOT set. Each replica keeps its own in-process LRU
+   verdict cache, so the same message can be re-scanned per replica. Set
+   redis.url (e.g. redis://valkey:6379/6) for a shared cache.
+{{- else }}
+   Shared verdict cache via {{ .Values.redis.url }}.
+{{- end }}
+{{- end }}
+
+Metrics: GET /metrics. Enable serviceMonitor.enabled=true for Prometheus
+Operator scraping (alerts + dashboard ship under contrib/deploy/).

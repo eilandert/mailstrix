@@ -623,6 +623,24 @@ scrape_configs:
       - targets: ['yarad:8079']
 ```
 
+## Kubernetes (Helm)
+
+A Helm chart lives at
+[`contrib/deploy/helm/yarad/`](contrib/deploy/helm/yarad/) — a single Deployment
++ ClusterIP Service (internal scan backend, no Ingress by design), mirroring the
+Docker compose security posture (nonroot, read-only rootfs, drop ALL caps,
+RuntimeDefault seccomp). It wires the token + abuse.ch key from a Secret
+(`--set token.value=…` or `token.existingSecret`), exposes the optional
+`YARAD_*` tunables under `config:`, and can emit a Prometheus-Operator
+`ServiceMonitor` (`--set serviceMonitor.enabled=true`) scraping the same
+`/metrics` the dashboard/alerts above consume. Replicas > 1 want
+`redis.url` for a shared verdict cache. See the
+[chart README](contrib/deploy/helm/yarad/README.md) for the values table.
+
+```sh
+helm install yarad ./contrib/deploy/helm/yarad --set token.value=$(openssl rand -hex 16)
+```
+
 ## Wiring it into rspamd
 
 The [`contrib/rspamd/`](contrib/rspamd/) directory has everything the rspamd side needs:
