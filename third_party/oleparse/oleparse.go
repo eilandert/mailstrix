@@ -880,11 +880,11 @@ func getUint32(dir_stream []byte, offset *int) uint32 {
 }
 
 func ExtractMacros(ofdoc *OLEFile) ([]*VBAModule, error) {
-	return extractMacros(ofdoc, true, MAX_DECOMPRESSED, 0)
+	return extractMacros(ofdoc, true, MAX_DECOMPRESSED, MAX_TOTAL_DECOMPRESSED)
 }
 
 func ExtractMacroBlobs(ofdoc *OLEFile) ([]*VBAModule, error) {
-	return extractMacros(ofdoc, false, MAX_DECOMPRESSED, 0)
+	return extractMacros(ofdoc, false, MAX_DECOMPRESSED, MAX_TOTAL_DECOMPRESSED)
 }
 
 func ExtractMacroBlobsLimited(ofdoc *OLEFile, maxModuleBytes, maxTotalBytes int) ([]*VBAModule, error) {

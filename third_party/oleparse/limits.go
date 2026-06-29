@@ -15,6 +15,15 @@ const (
 	// depth on top of the yarad-side amplifier bounds.
 	MAX_DECOMPRESSED = 32 * 1024 * 1024 // 32 MiB
 
+	// MAX_TOTAL_DECOMPRESSED caps the CUMULATIVE decompressed VBA output across
+	// all modules in one project. MAX_DECOMPRESSED bounds a single module, but a
+	// crafted project with many modules could still sum to many GiB. The legacy
+	// ExtractMacros/ExtractMacroBlobs compat APIs (which take no caller budget)
+	// default to this so they are not unbounded; the *Limited variants let the
+	// caller pass a tighter project budget. 128 MiB = 4× per-module, ample for
+	// any legit project (real VBA totals are well under MAX_DECOMPRESSED).
+	MAX_TOTAL_DECOMPRESSED = 128 * 1024 * 1024 // 128 MiB
+
 	// MAX_MODULES caps the VBA project module count. The uint16 field is already
 	// dir_stream-bounded, but a generous explicit cap stops a degenerate
 	// high-count header from driving a long parse loop. Mirrors the yarad-side

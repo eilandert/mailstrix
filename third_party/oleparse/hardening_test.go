@@ -148,6 +148,77 @@ func TestExtractMacrosRejectsHugeModuleOffsetNoPanic(t *testing.T) {
 	}
 }
 
+// oleWithModule builds a minimal one-module VBA OLEFile whose module code
+// stream decompresses to `payload`. Used to exercise the decompressed-output
+// budget on the macro extractors.
+func oleWithModule(t testing.TB, payload []byte) *OLEFile {
+	t.Helper()
+	dirStream := vbaDirStreamWithModuleOffset(t, "Module1", 0)
+	projectStream := []byte("Module=Module1\n")
+	codeStream := compressedRawChunk(t, payload)
+	dirs := []*Directory{
+		{Index: 0, Name: "PROJECT"},
+		{Index: 1, Name: "dir"},
+		{Index: 2, Name: "Module1"},
+	}
+	return &OLEFile{
+		Directory: dirs,
+		nameIdx: map[string]*Directory{
+			"PROJECT": dirs[0],
+			"dir":     dirs[1],
+			"Module1": dirs[2],
+		},
+		streamCache: map[uint32][]byte{
+			0: projectStream,
+			1: compressedRawChunk(t, dirStream),
+			2: codeStream,
+		},
+	}
+}
+
+// The legacy ExtractMacros / ExtractMacroBlobs compat APIs take no caller
+// budget. They must still enforce a cumulative decompressed-output cap so a
+// crafted multi-module project cannot amplify unbounded. Regression guard: the
+// default total cap is non-zero (an earlier revision passed 0 = unbounded).
+func TestLegacyExtractMacrosHasCumulativeCap(t *testing.T) {
+	if MAX_TOTAL_DECOMPRESSED <= 0 {
+		t.Fatalf("MAX_TOTAL_DECOMPRESSED = %d, want a positive cumulative cap", MAX_TOTAL_DECOMPRESSED)
+	}
+
+	payload := bytes.Repeat([]byte{0x41}, 64) // 64 cleartext bytes
+	ole := oleWithModule(t, payload)
+
+	mods, err := ExtractMacros(ole)
+	if err != nil {
+		t.Fatalf("ExtractMacros: %v", err)
+	}
+	if len(mods) != 1 {
+		t.Fatalf("ExtractMacros returned %d modules, want 1", len(mods))
+	}
+	if mods[0].Code != string(payload) {
+		t.Fatalf("module code = %q, want %q (default cap must not truncate a 64-byte module)", mods[0].Code, payload)
+	}
+}
+
+// A tight cumulative budget must truncate module output so the summed
+// decompressed size cannot exceed the cap. This exercises the maxTotalBytes
+// gate the legacy APIs now feed via MAX_TOTAL_DECOMPRESSED.
+func TestExtractMacrosCumulativeBudgetTruncates(t *testing.T) {
+	payload := bytes.Repeat([]byte{0x41}, 64)
+	ole := oleWithModule(t, payload)
+
+	mods, err := extractMacros(ole, false, MAX_DECOMPRESSED, 8) // 8-byte total budget
+	if err != nil {
+		t.Fatalf("extractMacros: %v", err)
+	}
+	if len(mods) != 1 {
+		t.Fatalf("got %d modules, want 1", len(mods))
+	}
+	if len(mods[0].CodeBytes) > 8 {
+		t.Fatalf("module decompressed %d bytes, want <= 8 (cumulative budget must cap)", len(mods[0].CodeBytes))
+	}
+}
+
 func TestParseFileRejectsOversizedOLEInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "oversized.doc")
 	data := append([]byte(OLE_SIGNATURE), bytes.Repeat([]byte{0}, maxParseFileOLEBytes-len(OLE_SIGNATURE)+1)...)
