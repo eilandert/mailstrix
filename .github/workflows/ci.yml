@@ -6,8 +6,10 @@
 # govulncheck enforces.
 name: ci
 on:
-  push:
-    branches: [main, master]
+  # CI runs on PRs into main/master ONLY — not on push to main. A merge already
+  # passed this gate on the PR, so re-running it on the resulting push to main is
+  # wasted compute. release.yml still invokes this same gate via workflow_call
+  # before publishing.
   pull_request:
     # Per-item campaign PRs target the staging branch `dev` and are gated by the
     # local CI gate only (tools/strixd-local-ci.sh); remote CI runs once on the
