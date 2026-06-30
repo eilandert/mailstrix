@@ -312,7 +312,20 @@ func openCSV(body []byte) (io.ReadCloser, error) {
 			if f.UncompressedSize64 > uint64(maxDecompressedBytes) { //#nosec G115
 				continue
 			}
-			return f.Open()
+			rc, err := f.Open()
+			if err != nil {
+				return nil, err
+			}
+			// Read the decompressed bytes into memory, bounded by the cap. A
+			// corrupt or adversarial deflate stream can cause the flate decompressor
+			// to spin reading 0 bytes per iteration — io.LimitReader on the output
+			// side cannot terminate that loop; only bounding the read here does.
+			raw, err := io.ReadAll(io.LimitReader(rc, maxDecompressedBytes))
+			rc.Close() // #nosec G104
+			if err != nil {
+				return nil, err
+			}
+			return io.NopCloser(bytes.NewReader(raw)), nil
 		}
 		return nil, errors.New("malwarebazaar: empty zip dump")
 	}

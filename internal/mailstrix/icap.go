@@ -361,6 +361,13 @@ func readICAPChunkedBody(r *bufio.Reader, maxBytes int64) ([]byte, bool, error) 
 		if err != nil {
 			return nil, false, fmt.Errorf("bad ICAP chunk size %q: %w", raw, err)
 		}
+		// A chunk size is unsigned hex (RFC 3507 §4.5 / RFC 9112 §7.1). ParseInt
+		// accepts a leading '-', so a hostile "-1\r\n" yields size<0, which skips
+		// the size==0 and >maxBytes guards and reaches slices.Grow(out, negative)
+		// → panic (a remote DoS). Reject any negative size up front.
+		if size < 0 {
+			return nil, false, fmt.Errorf("bad ICAP chunk size %q: negative", raw)
+		}
 		if size == 0 {
 			// Terminal chunk — consume trailing CRLF.
 			_, _ = r.ReadString('\n')

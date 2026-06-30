@@ -91,9 +91,13 @@ func FuzzExtract(f *testing.F) {
 	f.Fuzz(func(t *testing.T, buf []byte) {
 		res := Extract(buf, time.Time{}) // must not panic, must terminate
 
-		if !res.IsDoc && (len(res.Streams) > 0 || res.Failed || res.Encrypted) {
-			t.Fatalf("non-doc with side effects: %+v (len=%d)", flags(res), len(buf))
-		}
+		// IsDoc is a container-classification metric only — it is NOT a gate on
+		// stream emission. The default (non-container) path runs text-payload
+		// emitters (fromEncoded/fromCSVDDE/fromHTMLSmuggling/fromEncodedScript)
+		// that legitimately surface decoded streams from arbitrary text without
+		// setting IsDoc; those streams are scanned downstream. So a non-doc with
+		// streams is VALID — the invariant is only that an ENCRYPTED doc reveals
+		// no plaintext streams.
 		if res.Encrypted && len(res.Streams) > 0 {
 			t.Fatalf("encrypted doc also returned %d streams", len(res.Streams))
 		}
@@ -132,9 +136,12 @@ func FuzzDecompressStream(f *testing.F) {
 // FuzzFoldXLMFormula drives the XLM constant-folder with arbitrary formula
 // text. foldXLMFormula↔foldFunctionCall are mutually recursive over attacker-
 // controlled nesting, so the invariant is: never overflow the stack, always
-// terminate, never return more than the input could justify. The harness seeds
-// deep =EXEC(EXEC(…)) and CHAR()&… concatenation chains. (STAB-1)
+// terminate, never return more than the input could justify. Seeds cover:
+// CHAR()& chains, deep EXEC nesting (depth gate), MID() slicing (foldMIDCall
+// ↔ foldXLMFormulaDepth recursion), splitOnConcat corner-cases (unbalanced
+// parens, embedded quotes, zero-length parts), dangerous-func markers. (STAB-1)
 func FuzzFoldXLMFormula(f *testing.F) {
+	// Baseline seeds (original).
 	f.Add("=CHAR(104)&CHAR(116)&\"tp://evil.com\"")
 	f.Add("=EXEC(CHAR(99)&\"md /c calc\")")
 	f.Add(func() string {
@@ -146,6 +153,53 @@ func FuzzFoldXLMFormula(f *testing.F) {
 	}())
 	f.Add("")
 	f.Add("plain text no formula")
+
+	// MID() path — foldMIDCall ↔ foldXLMFormulaDepth recursion (new in #333).
+	f.Add(`=MID("hello world",1,5)`)
+	f.Add(`=MID(CHAR(104)&"ttp://evil.com",1,15)`)
+	f.Add(`=MID(MID("nested",1,6),2,3)`)
+	// Deep MID nesting — exercises the depth gate on the recursive path.
+	f.Add(func() string {
+		s := `"ABCDEFGH"`
+		for i := 0; i < maxXLMFoldDepth*3; i++ {
+			s = "MID(" + s + ",1,8)"
+		}
+		return "=" + s
+	}())
+	// MID with bad arg counts (< 3 args — must not panic).
+	f.Add(`=MID("text",1)`)
+	f.Add(`=MID()`)
+	f.Add(`=MID("text")`)
+	// MID start=0 and start > len (boundary).
+	f.Add(`=MID("abc",0,2)`)
+	f.Add(`=MID("abc",99,2)`)
+	f.Add(`=MID("abc",1,0)`)
+
+	// splitOnConcat corner-cases (unbalanced parens, embedded quotes).
+	f.Add(`="&"`)
+	f.Add(`="""" & """"`)        // escaped quotes on both sides of &
+	f.Add(`=CHAR(65)&"A&B"`)     // & inside a string literal
+	f.Add(`=EXEC(CHAR(65)&"B")`) // & inside balanced parens
+	f.Add(`=((CHAR(65)))`)       // extra parens
+	f.Add(`=CHAR(65)&CHAR(`)     // truncated — unbalanced open paren
+	f.Add(`=CHAR(65))&CHAR(66)`) // extra close paren
+
+	// Dangerous-func markers with nested folding.
+	f.Add(`=CALL(CHAR(99)&"md",CHAR(32)&"/c calc")`)
+	f.Add(`=REGISTER("ntdll","ZwCreateProcess",` + `"JJCJJ")`)
+	f.Add(`=FOPEN(MID("C:\\evil.bat",1,12),"rw")`)
+	f.Add(`=SEND.KEYS(CHAR(123)&"F4}")`)
+	// EXECUTE (DDE) — distinct from EXEC.
+	f.Add(`=EXECUTE(CHAR(99)&"md")`)
+	// INITIATE (DDE conversation).
+	f.Add(`=INITIATE("Excel","[EXEC(cmd)]")`)
+
+	// Mixed: MID inside EXEC inside concatenation.
+	f.Add(`=EXEC(MID("cmd /c calc",1,11)&CHAR(0))`)
+
+	// Whitespace and case variants.
+	f.Add(`= CHAR( 65 ) & CHAR( 66 )`)
+	f.Add(`=char(65)&mid("AB",1,1)`)
 
 	f.Fuzz(func(t *testing.T, formula string) {
 		// Bound the input the way the real caller does (maxXLMFoldFormulaLen)

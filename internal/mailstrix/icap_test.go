@@ -276,6 +276,29 @@ func TestICAPChunkedParsing(t *testing.T) {
 	}
 }
 
+// TestICAPChunkedBodyMalformedSize guards readICAPChunkedBody against malformed
+// chunk-size lines. A negative size ("-1") is the regression that mattered:
+// strconv.ParseInt accepts the leading '-', so it slipped past the size==0 and
+// >maxBytes guards and reached slices.Grow(out, negative) → panic (remote DoS).
+// All of these must return an error, never panic.
+func TestICAPChunkedBodyMalformedSize(t *testing.T) {
+	const maxBody = 1 << 20
+	for _, tc := range []struct{ name, body string }{
+		{"negative", "-1\r\ndata\r\n0\r\n\r\n"},
+		{"negative-hex", "-ff\r\ndata\r\n0\r\n\r\n"},
+		{"not-hex", "zz\r\ndata\r\n0\r\n\r\n"},
+		{"empty-size", "\r\ndata\r\n0\r\n\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			br := bufio.NewReader(strings.NewReader(tc.body))
+			_, _, err := readICAPChunkedBody(br, maxBody)
+			if err == nil {
+				t.Fatalf("%s: expected error for malformed chunk size, got nil", tc.name)
+			}
+		})
+	}
+}
+
 func TestICAPScanErrorFailsOpen(t *testing.T) {
 	eng := &fakeEngine{count: 1, err: fmt.Errorf("scan engine exploded")}
 	s := newTestServer(eng, "")
