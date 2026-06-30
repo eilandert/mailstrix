@@ -716,7 +716,7 @@ func emitRarMembers(rr *rardecode.Reader, buf []byte, cracked bool, res *Result,
 		// oversized sibling (past the per-member cap) outright so a hostile archive
 		// can't force repeated 16MiB inflates during the replay.
 		if cracked {
-			if h.UnPackedSize <= maxBytesPerMember {
+			if h.UnPackedSize > 0 && h.UnPackedSize <= maxBytesPerMember {
 				_ = readMember(rr, uint64(h.UnPackedSize))
 			}
 			continue
