@@ -19,11 +19,11 @@ import (
 	"github.com/cespare/xxhash/v2"
 	yara "github.com/hillu/go-yara/v4"
 
-	"github.com/eilandert/mailstrix/internal/extract"
-	"github.com/eilandert/mailstrix/internal/mbazaar"
-	"github.com/eilandert/mailstrix/internal/threatfox"
-	"github.com/eilandert/mailstrix/internal/urlcand"
-	"github.com/eilandert/mailstrix/internal/urlhaus"
+	"github.com/myguard-labs/mailstrix/internal/extract"
+	"github.com/myguard-labs/mailstrix/internal/mbazaar"
+	"github.com/myguard-labs/mailstrix/internal/threatfox"
+	"github.com/myguard-labs/mailstrix/internal/urlcand"
+	"github.com/myguard-labs/mailstrix/internal/urlhaus"
 )
 
 // streamDedupKey returns a 16-byte key for the per-stream dedup set inside

@@ -17,7 +17,7 @@ description: |
   and scans them with a local YARA rule set plus live abuse.ch IOC feeds.
   Replaces the olefy->olevba bridge and the SpamAssassin OLEVBMacro plugin with
   a single cached daemon, integrating with rspamd, SpamAssassin and ICAP.
-homepage: https://github.com/eilandert/mailstrix
+homepage: https://github.com/myguard-labs/mailstrix
 license: MIT
 depends:
   - libc6

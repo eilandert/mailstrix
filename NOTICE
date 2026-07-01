@@ -43,7 +43,7 @@ at image build time. Each source retains its own license:
    License: BSD 3-Clause License
 
 9. Local rules (strixd)
-   URL:     https://github.com/eilandert/mailstrix
+   URL:     https://github.com/myguard-labs/mailstrix
    License: MIT (same as this project)
 
 ---

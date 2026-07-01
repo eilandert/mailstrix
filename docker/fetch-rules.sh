@@ -82,7 +82,7 @@ dl() {
 # strixd pulls at runtime via `--fetch-rules`. The cron does NOT set LOCAL_ONLY.
 if [ "${LOCAL_ONLY:-0}" = "1" ]; then
     echo "fetch-rules: LOCAL_ONLY=1 — skipping all network sources (public rules come from the rules-current release)"
-    printf '[\n  {"name":"local","repo":"https://github.com/eilandert/mailstrix","license":"MIT","ref":"baked"}\n]\n' > "$OUT/sources.json"
+    printf '[\n  {"name":"local","repo":"https://github.com/myguard-labs/mailstrix","license":"MIT","ref":"baked"}\n]\n' > "$OUT/sources.json"
     echo "fetch-rules: wrote $OUT/sources.json (local-only)"
     exit 0
 fi
@@ -403,7 +403,7 @@ echo "fetch-rules: $COUNT rule files in $OUT"
     if [ "${YARAIFY:-1}" = "1" ]; then
         printf ',\n  {"name":"yaraify","repo":"https://yaraify.abuse.ch/yarahub/","license":"CC0","ref":"latest"}'
     fi
-    printf ',\n  {"name":"local","repo":"https://github.com/eilandert/mailstrix","license":"MIT","ref":"baked"}'
+    printf ',\n  {"name":"local","repo":"https://github.com/myguard-labs/mailstrix","license":"MIT","ref":"baked"}'
     printf '\n]\n'
 } > "$OUT/sources.json"
 echo "fetch-rules: wrote $OUT/sources.json"

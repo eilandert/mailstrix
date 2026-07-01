@@ -10,16 +10,16 @@ nested carriers — until YARA detection rules can finally see the dangerous bit
 It runs out-of-process behind Rspamd (async HTTP), SpamAssassin, an ICAP server,
 Dovecot Sieve, or standalone.
 
-[![CI](https://github.com/eilandert/mailstrix/actions/workflows/ci.yml/badge.svg)](https://github.com/eilandert/mailstrix/actions/workflows/ci.yml)
-[![Release](https://github.com/eilandert/mailstrix/actions/workflows/release.yml/badge.svg)](https://github.com/eilandert/mailstrix/actions/workflows/release.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/eilandert/mailstrix.svg)](https://pkg.go.dev/github.com/eilandert/mailstrix)
+[![CI](https://github.com/myguard-labs/mailstrix/actions/workflows/ci.yml/badge.svg)](https://github.com/myguard-labs/mailstrix/actions/workflows/ci.yml)
+[![Release](https://github.com/myguard-labs/mailstrix/actions/workflows/release.yml/badge.svg)](https://github.com/myguard-labs/mailstrix/actions/workflows/release.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/myguard-labs/mailstrix.svg)](https://pkg.go.dev/github.com/myguard-labs/mailstrix)
 
 **strixd is a small HTTP service that scans email for malware with
 [YARA](https://virustotal.github.io/yara/).** You hand it a message (or one
 attachment) on `POST /scan`; it runs ~10,000 curated public YARA rules over it
 and tells you which ones matched. It ships as a ready-to-run Docker image with
 the rules already baked in — see **[Quick start](#quick-start)** below or pull it
-straight from **[Docker Hub](https://hub.docker.com/r/eilandert/mailstrix)**.
+straight from **[Docker Hub](https://hub.docker.com/r/myguard-labs/mailstrix)**.
 
 **Why YARA, in one paragraph.** YARA is the rule engine malware analysts use to
 recognise *families* of malicious files — booby-trapped Office docs, packed
@@ -142,15 +142,15 @@ be scaled, restarted, or reload its rules on its own. Same shape as the
 Three ways, pick one:
 
 **Debian/Ubuntu package** (`.deb`, amd64 + arm64) — attached to every
-[release](https://github.com/eilandert/mailstrix/releases/latest):
+[release](https://github.com/myguard-labs/mailstrix/releases/latest):
 
 ```sh
 # Resolve the latest version + your arch (release assets are version-pinned,
 # e.g. strixd_1.1.0_amd64.deb — the bare latest/download/ path is not).
-VER=$(curl -fsSL https://api.github.com/repos/eilandert/mailstrix/releases/latest \
+VER=$(curl -fsSL https://api.github.com/repos/myguard-labs/mailstrix/releases/latest \
         | grep -oP '"tag_name":\s*"v\K[^"]+')
 ARCH=$(dpkg --print-architecture)   # amd64 or arm64
-BASE=https://github.com/eilandert/mailstrix/releases/download/v${VER}
+BASE=https://github.com/myguard-labs/mailstrix/releases/download/v${VER}
 
 # strixd — the daemon (systemd unit + /etc/mailstrix/strixd.env config)
 curl -fsSLO "${BASE}/strixd_${VER}_${ARCH}.deb"
@@ -183,7 +183,7 @@ The image already bakes ~10k rules, so a token is all you need:
 docker run -d --name strixd \
     -e MAILSTRIX_TOKEN=changeme \
     -p 8079:8079 \
-    eilandert/mailstrix
+    myguard-labs/mailstrix
 
 # ask it something:
 printf 'hello' | curl -s -H 'X-MAILSTRIX-Token: changeme' \
@@ -200,7 +200,7 @@ docker run -d --name strixd \
     -e MAILSTRIX_RULES_DIR=/rules \
     -v "$PWD/myrules:/rules:ro" \
     -p 8079:8079 \
-    eilandert/mailstrix
+    myguard-labs/mailstrix
 ```
 
 Send an attachment name so name-keyed rules fire (base64 — the name is
@@ -711,7 +711,7 @@ detector) — CI fails on a bad commit before any image is published:
 docker build --target test -f docker/Dockerfile -t strixd-test .
 
 # the production image (distroless, nonroot, ~100 MB):
-docker build --target final -f docker/Dockerfile -t eilandert/mailstrix \
+docker build --target final -f docker/Dockerfile -t myguard-labs/mailstrix \
     --build-arg CACHEBUST=$(date +%s) .
 ```
 
@@ -821,7 +821,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 - **[SpamAssassin plugin](contrib/spamassassin/)** — scan each message through strixd and score a YARA match.
 - **[Dovecot/Sieve example](contrib/sieve/)** — quarantine a match with the `strix-scan` client.
 - **Article:** [YARA malware scanning in rspamd](https://deb.myguard.nl/articles/yara-malware-scanning-mailstrix/) — the why and how, on deb.myguard.nl.
-- **Docker Hub:** [`eilandert/mailstrix`](https://hub.docker.com/r/eilandert/mailstrix).
+- **Docker Hub:** [`myguard-labs/mailstrix`](https://hub.docker.com/r/myguard-labs/mailstrix).
 
 ## License
 

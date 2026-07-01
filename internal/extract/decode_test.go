@@ -459,7 +459,10 @@ func TestFoldVBAStringsInputClamp(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	// 30s not 5s: under -asan the clamped 1 MiB body folds in ~3.5s, and a
+	// loaded CI runner can push that past a tight 5s wall (false timeout). The
+	// point of this test is termination, not latency — give ASAN headroom.
+	case <-time.After(30 * time.Second):
 		t.Fatal("foldVBAStrings did not terminate on a multi-MiB body")
 	}
 	if emitted != 0 {

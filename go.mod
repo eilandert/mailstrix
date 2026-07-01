@@ -1,4 +1,4 @@
-module github.com/eilandert/mailstrix
+module github.com/myguard-labs/mailstrix
 
 go 1.25.0
 
@@ -37,3 +37,11 @@ require (
 )
 
 replace www.velocidex.com/golang/oleparse => ./third_party/oleparse
+
+// Versions v1.0.0–v1.2.0 were published under the old module path
+// github.com/eilandert/mailstrix. Under the new path they are invalid.
+retract (
+	v1.2.0
+	v1.1.0
+	v1.0.0
+)

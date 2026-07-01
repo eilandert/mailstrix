@@ -36,11 +36,11 @@ and allowlisted hits are also log-only (exit 0).
 
    ```sh
    docker run -d --name strixd -e MAILSTRIX_TOKEN_FILE=/run/secrets/mailstrix_token \
-       -p 8079:8079 eilandert/mailstrix
+       -p 8079:8079 myguard-labs/mailstrix
    ```
 
 2. **Install the client** on the mail host — grab `strix-scan-linux-<arch>` from
-   the [GitHub release](https://github.com/eilandert/mailstrix/releases):
+   the [GitHub release](https://github.com/myguard-labs/mailstrix/releases):
 
    ```sh
    install -m0755 strix-scan-linux-amd64 /usr/local/bin/strix-scan

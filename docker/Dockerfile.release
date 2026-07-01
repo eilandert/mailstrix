@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # filter to just the two we fetched and check.
 WORKDIR /out
 RUN VER="${VERSION#v}" \
-    && base="https://github.com/eilandert/mailstrix/releases/download/v${VER}" \
+    && base="https://github.com/myguard-labs/mailstrix/releases/download/v${VER}" \
     && curl -fsSL "${base}/strixd-linux-${TARGETARCH}"      -o "strixd-linux-${TARGETARCH}" \
     && curl -fsSL "${base}/strix-scan-linux-${TARGETARCH}" -o "strix-scan-linux-${TARGETARCH}" \
     && curl -fsSL "${base}/SHA256SUMS"                      -o SHA256SUMS \

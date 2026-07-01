@@ -9,9 +9,9 @@ type: application
 version: 0.1.0
 # Application version — the strixd release this chart defaults to (image tag).
 appVersion: "1.2.0"
-home: https://github.com/eilandert/mailstrix
+home: https://github.com/myguard-labs/mailstrix
 sources:
-  - https://github.com/eilandert/mailstrix
+  - https://github.com/myguard-labs/mailstrix
 keywords:
   - yara
   - rspamd

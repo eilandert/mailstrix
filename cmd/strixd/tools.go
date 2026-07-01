@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/eilandert/mailstrix/internal/extract"
-	"github.com/eilandert/mailstrix/internal/mailstrix"
+	"github.com/myguard-labs/mailstrix/internal/extract"
+	"github.com/myguard-labs/mailstrix/internal/mailstrix"
 )
 
 // cmdCheckRules compiles the configured rule set and reports the result without

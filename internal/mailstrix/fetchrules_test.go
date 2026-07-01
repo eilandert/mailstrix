@@ -208,7 +208,7 @@ func TestRulesManifestJSONRoundTrip(t *testing.T) {
 		Sources: []RuleSource{
 			{Name: "yaraforge", Repo: "https://github.com/YARAHQ/yara-forge", License: "mixed (see repo)", Ref: "latest", Set: "core"},
 			{Name: "signature-base", Repo: "https://github.com/Neo23x0/signature-base", License: "CC BY-NC 4.0", Ref: "master"},
-			{Name: "local", Repo: "https://github.com/eilandert/mailstrix", License: "MIT", Ref: "baked"},
+			{Name: "local", Repo: "https://github.com/myguard-labs/mailstrix", License: "MIT", Ref: "baked"},
 		},
 	}
 	b, err := json.Marshal(orig)
@@ -235,7 +235,7 @@ func TestLoadSources(t *testing.T) {
 	dir := t.TempDir()
 	srcs := []RuleSource{
 		{Name: "yaraforge", Repo: "https://github.com/YARAHQ/yara-forge", License: "mixed (see repo)", Ref: "latest", Set: "core"},
-		{Name: "local", Repo: "https://github.com/eilandert/mailstrix", License: "MIT", Ref: "baked"},
+		{Name: "local", Repo: "https://github.com/myguard-labs/mailstrix", License: "MIT", Ref: "baked"},
 	}
 	b, _ := json.Marshal(srcs)
 	if err := os.WriteFile(filepath.Join(dir, "sources.json"), b, 0o600); err != nil {

@@ -2,12 +2,12 @@
 mailstrix.lua — rspamd plugin that scans a message (and optionally each MIME part)
 against a set of YARA rules through the strixd HTTP backend.
 
-Project:   https://github.com/eilandert/mailstrix
+Project:   https://github.com/myguard-labs/mailstrix
 Home:      https://mailstrix.com
 Write-up:  https://deb.myguard.nl/articles/yara-malware-scanning-mailstrix/
 
 Copyright (c) 2026 eilandert
-SPDX-License-Identifier: MIT  —  https://github.com/eilandert/mailstrix/blob/main/LICENSE
+SPDX-License-Identifier: MIT  —  https://github.com/myguard-labs/mailstrix/blob/main/LICENSE
 
 Why a backend instead of a native module:
   * rspamd has no native YARA module (as of 4.1.0; upstream feature is still an

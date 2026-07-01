@@ -3,7 +3,7 @@ package mailstrix
 import (
 	"strings"
 
-	"github.com/eilandert/mailstrix/internal/extract"
+	"github.com/myguard-labs/mailstrix/internal/extract"
 )
 
 // extMismatchMarker is the synthetic out-of-band marker emitted when the actual

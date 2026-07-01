@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eilandert/mailstrix/internal/mbazaar"
-	"github.com/eilandert/mailstrix/internal/threatfox"
-	"github.com/eilandert/mailstrix/internal/urlhaus"
+	"github.com/myguard-labs/mailstrix/internal/mbazaar"
+	"github.com/myguard-labs/mailstrix/internal/threatfox"
+	"github.com/myguard-labs/mailstrix/internal/urlhaus"
 )
 
 func get(s *Server, path string) *httptest.ResponseRecorder {

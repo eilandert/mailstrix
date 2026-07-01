@@ -8,13 +8,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/eilandert/mailstrix/internal/mailstrix"
+	"github.com/myguard-labs/mailstrix/internal/mailstrix"
 )
 
 // defaultRulesURL is the rolling release directory that generate-rules.sh
 // publishes compiled.yac + its manifest to. Override with -url / MAILSTRIX_RULES_URL
 // (e.g. to point at a mirror).
-const defaultRulesURL = "https://github.com/eilandert/mailstrix/releases/download/rules-current"
+const defaultRulesURL = "https://github.com/myguard-labs/mailstrix/releases/download/rules-current"
 
 // cmdFetchRules downloads an updated compiled rule bundle into the cache, driven
 // by the published manifest: it fetches the manifest first and updates only when

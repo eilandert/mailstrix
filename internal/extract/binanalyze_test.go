@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eilandert/mailstrix/internal/extract"
+	"github.com/myguard-labs/mailstrix/internal/extract"
 )
 
 // PE32 layout constants (fixed, all sizes in bytes):

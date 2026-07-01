@@ -1,6 +1,6 @@
 # strixd Helm chart
 
-A Helm v3 chart for [mailstrix](https://github.com/eilandert/mailstrix) — a single
+A Helm v3 chart for [mailstrix](https://github.com/myguard-labs/mailstrix) — a single
 Go HTTP daemon that scans mail content with YARA rules (plus optional abuse.ch
 threat-intel feeds) as an internal backend for the rspamd `mailstrix.lua` plugin.
 
@@ -46,7 +46,7 @@ helm install strixd ./contrib/deploy/helm/mailstrix \
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `image.repository` | `eilandert/mailstrix` | Image repo (use `:debian` tag for glibc variant). |
+| `image.repository` | `myguard-labs/mailstrix` | Image repo (use `:debian` tag for glibc variant). |
 | `image.tag` | `""` | Falls back to `Chart.appVersion` (`1.2.0`). |
 | `image.pullPolicy` | `IfNotPresent` | |
 | `replicaCount` | `1` | `>1` requires `redis.url` for a shared verdict cache. |

@@ -1,6 +1,6 @@
 # mailstrix.cf — SpamAssassin rules + config for the Mailstrix plugin.
 #
-# Project: https://github.com/eilandert/mailstrix
+# Project: https://github.com/myguard-labs/mailstrix
 # Plugin:  Mailstrix.pm (loaded via mailstrix.pre)
 #
 # Copy into SpamAssassin's config dir and edit the connection settings below.

@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/eilandert/mailstrix/internal/mailstrix"
+	"github.com/myguard-labs/mailstrix/internal/mailstrix"
 )
 
 // scanItem is one file's verdict in the JSON output. Err is set (and Matches

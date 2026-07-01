@@ -1,11 +1,11 @@
 # Mail::SpamAssassin::Plugin::Mailstrix — scan each message through a central strixd.
 #
-# Project:   https://github.com/eilandert/mailstrix
+# Project:   https://github.com/myguard-labs/mailstrix
 # Home:      https://mailstrix.com
 # Write-up:  https://deb.myguard.nl/articles/yara-malware-scanning-mailstrix/
 #
 # Copyright (c) 2026 eilandert
-# SPDX-License-Identifier: MIT  —  https://github.com/eilandert/mailstrix/blob/main/LICENSE
+# SPDX-License-Identifier: MIT  —  https://github.com/myguard-labs/mailstrix/blob/main/LICENSE
 #
 # This is the SpamAssassin sibling of the rspamd `mailstrix.lua` plugin and the
 # Dovecot/Sieve `strix-scan` client: it hands the raw message to a central

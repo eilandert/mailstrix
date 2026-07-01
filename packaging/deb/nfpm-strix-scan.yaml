@@ -14,7 +14,7 @@ description: |
   Lean CGO-free command-line client that POSTs a message to a strixd daemon's
   /scan endpoint and exits with a verdict code. Drop-in for Sieve external
   programs, Dovecot LDA pipes and shell integrations.
-homepage: https://github.com/eilandert/mailstrix
+homepage: https://github.com/myguard-labs/mailstrix
 license: MIT
 depends:
   - libc6

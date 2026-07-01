@@ -1,6 +1,6 @@
 [Unit]
 Description=strixd — YARA mail-malware scanning daemon
-Documentation=https://github.com/eilandert/mailstrix
+Documentation=https://github.com/myguard-labs/mailstrix
 After=network-online.target
 Wants=network-online.target
 

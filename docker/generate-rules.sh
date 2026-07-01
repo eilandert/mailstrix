@@ -28,7 +28,7 @@
 #   pin/toggle knobs as a direct image build.
 set -euo pipefail
 
-REPO="${REPO:-eilandert/mailstrix}"
+REPO="${REPO:-myguard-labs/mailstrix}"
 TAG="${TAG:-rules-current}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"   # repo root (script lives in docker/)
 WORK="$(mktemp -d)"

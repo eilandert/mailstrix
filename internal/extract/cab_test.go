@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eilandert/mailstrix/internal/extract"
+	"github.com/myguard-labs/mailstrix/internal/extract"
 )
 
 // buildNoneCab builds a minimal CAB with NONE compression holding one file.

@@ -3,7 +3,7 @@ package mailstrix
 import (
 	"time"
 
-	"github.com/eilandert/mailstrix/internal/extract"
+	"github.com/myguard-labs/mailstrix/internal/extract"
 )
 
 // Effort tiers (EFFORT-1) — the operator/caller cost dial.

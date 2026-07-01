@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/eilandert/mailstrix/internal/extract"
-	"github.com/eilandert/mailstrix/internal/mailstrix"
+	"github.com/myguard-labs/mailstrix/internal/extract"
+	"github.com/myguard-labs/mailstrix/internal/mailstrix"
 )
 
 // cmdInfo prints yarad's build and rule-bundle provenance: the project repo +

@@ -35,7 +35,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/eilandert/mailstrix/internal/atomicio"
+	"github.com/myguard-labs/mailstrix/internal/atomicio"
 )
 
 const (

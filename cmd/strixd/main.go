@@ -41,7 +41,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/eilandert/mailstrix/internal/mailstrix"
+	"github.com/myguard-labs/mailstrix/internal/mailstrix"
 )
 
 var version = "dev"

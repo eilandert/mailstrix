@@ -17,10 +17,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/eilandert/mailstrix/internal/extract"
-	"github.com/eilandert/mailstrix/internal/mbazaar"
-	"github.com/eilandert/mailstrix/internal/threatfox"
-	"github.com/eilandert/mailstrix/internal/urlhaus"
+	"github.com/myguard-labs/mailstrix/internal/extract"
+	"github.com/myguard-labs/mailstrix/internal/mbazaar"
+	"github.com/myguard-labs/mailstrix/internal/threatfox"
+	"github.com/myguard-labs/mailstrix/internal/urlhaus"
 
 	_ "net/http/pprof" // #nosec G108 -- handlers on DefaultServeMux; only delegated to when cfg.Pprof is set at runtime
 )
@@ -243,7 +243,7 @@ func (s *Server) logStartup(addr string) {
 }
 
 // RepoURL is the project's source, logged at startup when log-stdout is on.
-const RepoURL = "https://github.com/eilandert/mailstrix"
+const RepoURL = "https://github.com/myguard-labs/mailstrix"
 
 // HomeURL is the project's home page, logged at startup alongside RepoURL.
 const HomeURL = "https://mailstrix.com"

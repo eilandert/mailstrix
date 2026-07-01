@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eilandert/mailstrix/internal/urlcand"
+	"github.com/myguard-labs/mailstrix/internal/urlcand"
 )
 
 // TestWarmStartFromCache: a persisted feed snapshot in cacheDir is loaded into

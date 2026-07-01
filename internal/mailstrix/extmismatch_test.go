@@ -3,7 +3,7 @@ package mailstrix
 import (
 	"testing"
 
-	"github.com/eilandert/mailstrix/internal/extract"
+	"github.com/myguard-labs/mailstrix/internal/extract"
 )
 
 func TestExtMismatch(t *testing.T) {

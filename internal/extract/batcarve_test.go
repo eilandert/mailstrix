@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/eilandert/mailstrix/internal/extract"
+	"github.com/myguard-labs/mailstrix/internal/extract"
 )
 
 // batDeadline reuses the deadline() helper defined in cab_test.go (same package_test).

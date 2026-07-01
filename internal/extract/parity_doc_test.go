@@ -204,7 +204,7 @@ func TestParityContractMarkersHaveRules(t *testing.T) {
 // marker prefix that carries it. This is the anti-pruning artifact: if a future
 // rule/marker cleanup removes the marker that backs an indicator class, this test
 // fails — the gap olevba would reopen is caught at build time, not in production.
-// See memory/eilandert/mailstrix/parity-2026-06-28/RESULT.md.
+// See memory/myguard-labs/mailstrix/parity-2026-06-28/RESULT.md.
 var oletoolsIndicatorClasses = map[string]string{
 	// olevba "AutoExec" — auto-running macro entry points.
 	"olevba:AutoExec":       "XLM-AUTO-OPEN",
